@@ -583,15 +583,20 @@ function bpInfo(p) {
   return lines;
 }
 
-function blueprintSvg(p, profile, interactive) {
-  const bp = profile ? { profile, points: findPoints(profile) } : p.blueprint;
+// preview: frisches Analyse-Ergebnis (im Umriss-Editor), sonst die gespeicherte Blaupause
+function blueprintSvg(p, preview, interactive) {
+  const bp = preview
+    ? { ...(p.blueprint || {}), profile: preview.profile, points: findPoints(preview.profile), attachments: preview.attachments }
+    : p.blueprint;
   return renderBlueprint(bp, { ...bpData(p), title: p.name, info: bpInfo(p), interactive, seed: hashSeed(p.id || p.name) });
 }
 
-function makeBlueprint(photoId, crop, sens, profile, prev) {
+function makeBlueprint(photoId, crop, sens, result, prev, brush = []) {
   return {
-    photoId, crop, sens, profile,
-    points: findPoints(profile),
+    photoId, crop, sens, brush,
+    profile: result.profile,
+    attachments: result.attachments || [],
+    points: findPoints(result.profile),
     values: prev?.values || {},
     pos: prev?.pos || {},
     labels: prev?.labels || {},
@@ -604,8 +609,8 @@ async function createBlueprint(photoId, prev) {
   const photo = await db.get('photos', photoId);
   if (!photo) throw new Error('Foto nicht gefunden');
   const src = await loadForAnalysis(photo.blob);
-  const { profile } = analyze(src, { crop: DEFAULT_CROP, sens: DEFAULT_SENS });
-  return makeBlueprint(photoId, { ...DEFAULT_CROP }, DEFAULT_SENS, profile, prev);
+  const result = analyze(src, { crop: DEFAULT_CROP, sens: DEFAULT_SENS });
+  return makeBlueprint(photoId, { ...DEFAULT_CROP }, DEFAULT_SENS, result, prev);
 }
 
 function measureDialog({ title, isHeight, value, est, showPos, pos, posEst, label, removeText }) {
@@ -749,6 +754,9 @@ async function viewBlueprintEditor(id) {
     photoId: prev && p.photos.includes(prev.photoId) ? prev.photoId : p.photos[0],
     crop: { ...(prev?.crop || DEFAULT_CROP) },
     sens: prev?.sens ?? DEFAULT_SENS,
+    brush: prev && p.photos.includes(prev.photoId) ? structuredClone(prev.brush || []) : [],
+    mode: 'rahmen',
+    brushSize: 5,
     src: null,
     result: null,
   };
@@ -756,7 +764,20 @@ async function viewBlueprintEditor(id) {
   $app.innerHTML = `
     <div class="info-box"><p>Am besten klappt es mit einem Foto <strong>genau von der Seite</strong> vor einem ruhigen Hintergrund. Ziehe die Ränder des Rahmens eng um dein Stück (ohne Schatten).</p></div>
     ${p.photos.length > 1 ? `<div class="bp-choice">${p.photos.map(ph => `<button type="button" data-photo-id="${ph}" class="${ph === st.photoId ? 'active' : ''}" aria-label="Dieses Foto verwenden">${thumb(ph)}</button>`).join('')}</div>` : ''}
+    <div class="segmented" id="bp-mode" role="radiogroup" aria-label="Werkzeug">
+      <label><input type="radio" name="bpmode" value="rahmen" checked><span class="none">Rahmen</span></label>
+      <label><input type="radio" name="bpmode" value="pinsel"><span class="none">Henkel markieren</span></label>
+      <label><input type="radio" name="bpmode" value="radierer"><span class="none">Radierer</span></label>
+    </div>
     <div class="bp-editor"><canvas></canvas></div>
+    <div id="brush-tools" hidden>
+      <label class="range-field"><span>Pinselgröße</span>
+        <input type="range" min="2" max="12" value="${st.brushSize}" id="brush-size" class="compare-range"></label>
+      <div class="btn-row" style="margin-top:6px">
+        <button type="button" class="btn small" id="brush-undo">Rückgängig</button>
+        <button type="button" class="btn small danger" id="brush-clear">Markierung löschen</button>
+      </div>
+    </div>
     <label class="range-field"><span>Empfindlichkeit</span>
       <input type="range" min="0" max="100" value="${st.sens}" id="sens" class="compare-range"></label>
     <p class="hint" id="bp-status" style="margin:0 0 4px"></p>
@@ -775,6 +796,8 @@ async function viewBlueprintEditor(id) {
   const previewEl = $app.querySelector('#bp-preview');
   const applyBtn = $app.querySelector('#apply');
   let box = { w: 0, h: 0 };
+  const brushLayer = document.createElement('canvas');
+  const brushCtx = brushLayer.getContext('2d');
 
   const layout = () => {
     const img = st.src.img;
@@ -788,6 +811,8 @@ async function viewBlueprintEditor(id) {
     canvas.style.width = `${box.w}px`;
     canvas.style.height = `${box.h}px`;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    brushLayer.width = box.w;
+    brushLayer.height = box.h;
   };
 
   const draw = () => {
@@ -822,6 +847,36 @@ async function viewBlueprintEditor(id) {
       ctx.stroke();
       ctx.setLineDash([]);
     }
+    // Markierung (halbtransparent), Radierer-Striche nehmen sie wieder weg
+    if (st.brush.length) {
+      brushCtx.clearRect(0, 0, brushLayer.width, brushLayer.height);
+      brushCtx.lineCap = 'round';
+      brushCtx.lineJoin = 'round';
+      for (const b of st.brush) {
+        brushCtx.globalCompositeOperation = b.erase ? 'destination-out' : 'source-over';
+        brushCtx.strokeStyle = brushCtx.fillStyle = '#ff9a4d';
+        brushCtx.lineWidth = 2 * b.r * w;
+        brushCtx.beginPath();
+        b.pts.forEach(([x, y], i) => (i ? brushCtx.lineTo(x * w, y * h) : brushCtx.moveTo(x * w, y * h)));
+        if (b.pts.length === 1) { brushCtx.arc(b.pts[0][0] * w, b.pts[0][1] * h, b.r * w, 0, Math.PI * 2); brushCtx.fill(); }
+        else brushCtx.stroke();
+      }
+      brushCtx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 0.4;
+      ctx.drawImage(brushLayer, 0, 0, w, h);
+      ctx.globalAlpha = 1;
+    }
+    if (o?.attachments?.length) {
+      ctx.strokeStyle = '#2fe0ff';
+      ctx.lineWidth = 3;
+      for (const line of o.attachments) {
+        ctx.beginPath();
+        line.forEach(([x, y], i) => (i ? ctx.lineTo(x * w, y * h) : ctx.moveTo(x * w, y * h)));
+        ctx.closePath();
+        ctx.stroke();
+      }
+    }
+    if (st.mode !== 'rahmen') return;
     for (const [x, y] of [[(c.x0 + c.x1) / 2, c.y0], [(c.x0 + c.x1) / 2, c.y1], [c.x0, (c.y0 + c.y1) / 2], [c.x1, (c.y0 + c.y1) / 2]]) {
       ctx.beginPath();
       ctx.arc(x * w, y * h, 10, 0, Math.PI * 2);
@@ -836,15 +891,22 @@ async function viewBlueprintEditor(id) {
   const run = () => {
     let error = '';
     try {
-      st.result = analyze(st.src, { crop: st.crop, sens: st.sens });
+      st.result = analyze(st.src, { crop: st.crop, sens: st.sens, brush: st.brush });
     } catch (err) {
       st.result = null;
       error = err.message;
     }
     draw();
-    statusEl.textContent = error || 'Orange = erkannter Umriss. Passt er nicht, verschiebe den Rahmen oder die Empfindlichkeit.';
+    const marked = st.brush.some(b => !b.erase);
+    const found = st.result?.attachments.length || 0;
+    statusEl.textContent = error
+      || (st.mode === 'rahmen'
+        ? 'Orange = erkannter Umriss. Passt er nicht, verschiebe den Rahmen oder die Empfindlichkeit. Fehlt der Henkel, wähle „Henkel markieren“.'
+        : marked
+          ? (found ? `Türkis = erkannter Anbau (${found}). Zu viel erkannt? Mit dem Radierer wegnehmen.` : 'In der Markierung wurde nichts gefunden – male direkt über den Henkel.')
+          : 'Male mit dem Finger über den Henkel (oder Ausguss, Knauf …). Grob reicht – die genaue Form sucht die App selbst.');
     statusEl.style.color = error ? 'var(--bad)' : '';
-    previewEl.innerHTML = st.result ? blueprintSvg(p, st.result.profile, false) : '';
+    previewEl.innerHTML = st.result ? blueprintSvg(p, st.result, false) : '';
     applyBtn.disabled = !st.result;
   };
 
@@ -862,8 +924,17 @@ async function viewBlueprintEditor(id) {
     const r = canvas.getBoundingClientRect();
     return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height];
   };
+  let stroke = null;
   canvas.addEventListener('pointerdown', e => {
     const [x, y] = rel(e);
+    if (st.mode !== 'rahmen') {
+      stroke = { r: st.brushSize / 100, pts: [[x, y]], ...(st.mode === 'radierer' ? { erase: true } : {}) };
+      st.brush.push(stroke);
+      canvas.setPointerCapture(e.pointerId);
+      e.preventDefault();
+      draw();
+      return;
+    }
     const c = st.crop;
     const tx = 32 / box.w, ty = 32 / box.h;
     const inY = y > c.y0 - ty && y < c.y1 + ty;
@@ -877,6 +948,15 @@ async function viewBlueprintEditor(id) {
     e.preventDefault();
   });
   canvas.addEventListener('pointermove', e => {
+    if (stroke) {
+      const [x, y] = rel(e);
+      const [lx, ly] = stroke.pts[stroke.pts.length - 1];
+      if (Math.hypot((x - lx) * box.w, (y - ly) * box.h) > Math.max(3, stroke.r * box.w * 0.3)) {
+        stroke.pts.push([Math.round(x * 10000) / 10000, Math.round(y * 10000) / 10000]);
+        draw();
+      }
+      return;
+    }
     if (!drag) return;
     const [x, y] = rel(e);
     const c = st.crop;
@@ -888,7 +968,10 @@ async function viewBlueprintEditor(id) {
     if (drag === 'y1') c.y1 = cl(y, c.y0 + min, 1);
     draw();
   });
-  const endDrag = () => { if (drag) { drag = null; run(); } };
+  const endDrag = () => {
+    if (stroke) { stroke = null; run(); }
+    if (drag) { drag = null; run(); }
+  };
   canvas.addEventListener('pointerup', endDrag);
   canvas.addEventListener('pointercancel', endDrag);
 
@@ -899,11 +982,22 @@ async function viewBlueprintEditor(id) {
     timer = setTimeout(run, 120);
   });
 
+  const brushTools = $app.querySelector('#brush-tools');
+  $app.querySelector('#bp-mode').addEventListener('change', e => {
+    st.mode = e.target.value;
+    brushTools.hidden = st.mode === 'rahmen';
+    run();
+  });
+  $app.querySelector('#brush-size').addEventListener('input', e => { st.brushSize = Number(e.target.value); });
+  $app.querySelector('#brush-undo').onclick = () => { st.brush.pop(); run(); };
+  $app.querySelector('#brush-clear').onclick = () => { st.brush = []; run(); };
+
   $app.querySelector('.bp-choice')?.addEventListener('click', e => {
     const b = e.target.closest('[data-photo-id]');
     if (!b || b.dataset.photoId === st.photoId) return;
     st.photoId = b.dataset.photoId;
     st.crop = { ...DEFAULT_CROP };
+    st.brush = [];
     $app.querySelectorAll('.bp-choice button').forEach(x => x.classList.toggle('active', x === b));
     load();
   });
@@ -911,7 +1005,7 @@ async function viewBlueprintEditor(id) {
   $app.querySelector('#cancel').onclick = () => $back.click();
   applyBtn.onclick = async () => {
     if (!st.result) return;
-    p.blueprint = makeBlueprint(st.photoId, st.crop, st.sens, st.result.profile, prev);
+    p.blueprint = makeBlueprint(st.photoId, st.crop, st.sens, st.result, prev, st.brush);
     p.updatedAt = new Date().toISOString();
     await db.put('pieces', p);
     toast('Blaupause gespeichert');
@@ -1550,6 +1644,7 @@ async function viewMore() {
         <li>Beim Speichern erkennt die App die Form und markiert Rand, Bauch, Hals, Fußansatz und Boden.</li>
         <li>Tippe ein Maß an, um es einzutragen. Schon ein Maß (z. B. die Höhe) reicht – die übrigen werden aus dem Foto geschätzt (≈).</li>
         <li>Fehlt eine Stelle (z. B. eine Rille)? Tippe auf die Form an dieser Höhe. Stellen lassen sich auch umbenennen oder ausblenden.</li>
+        <li>Henkel, Ausguss oder Knauf: „Umriss anpassen“ → „Henkel markieren“ und mit dem Finger grob darüber wischen.</li>
         <li>Vor dem Töpfern: Werkstück öffnen → „Groß anzeigen“. Der Bildschirm bleibt dabei an.</li>
       </ol>
     </div>

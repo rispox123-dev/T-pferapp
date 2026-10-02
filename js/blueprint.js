@@ -45,7 +45,7 @@ export async function loadForAnalysis(blob) {
   return { img, width, height, data: ctx.getImageData(0, 0, width, height).data };
 }
 
-export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS } = {}) {
+export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS, brush = [] } = {}) {
   const { width: IW, height: IH, data } = src;
   const x0 = clamp(Math.round(crop.x0 * IW), 0, IW - 8);
   const x1 = clamp(Math.round(crop.x1 * IW), x0 + 8, IW);
@@ -226,10 +226,330 @@ export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS } = {}) 
     outlineR.push(toRel(axis + r, y));
   }
 
+  // Mit dem Finger markierte Anbauten (Henkel, Ausguss …) in voller Auflösung analysieren
+  const attach = brush.some(b => !b.erase)
+    ? analyzeAttachments(src, { strokes: brush, samples, T, axis: axis + x0, top: top + y0, hw, hgt, rimRows: ryTop + 2, baseRows: ryBot + 2 })
+    : { attachments: [], outline: [] };
+
   return {
     profile,
-    outline: { left: outlineL, right: outlineR, axis: (axis + x0) / IW, top: (top + y0) / IH, bottom: (bottom + y0) / IH },
+    attachments: attach.attachments,
+    outline: {
+      left: outlineL, right: outlineR, axis: (axis + x0) / IW, top: (top + y0) / IH, bottom: (bottom + y0) / IH,
+      attachments: attach.outline,
+    },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Anbauten: markierter Bereich wird aus dem Originalfoto in hoher Auflösung
+// ausgeschnitten, mit eigener Schwelle vom Hintergrund getrennt, bereinigt
+// und als glatte Kontur nachgezogen.
+// ---------------------------------------------------------------------------
+
+const ATTACH_SIZE = 560;
+
+function analyzeAttachments(src, { strokes, samples, T, axis, top, hw, hgt, rimRows, baseRows }) {
+  const IW = src.width, IH = src.height;
+  const NW = src.img.naturalWidth, NH = src.img.naturalHeight;
+
+  // Begrenzungsrahmen der Markierung (relativ zum Bild)
+  let bx0 = 1, by0 = 1, bx1 = 0, by1 = 0;
+  for (const st of strokes) {
+    if (st.erase) continue;
+    const ry = (st.r * NW) / NH;
+    for (const [x, y] of st.pts) {
+      bx0 = Math.min(bx0, x - st.r); bx1 = Math.max(bx1, x + st.r);
+      by0 = Math.min(by0, y - ry); by1 = Math.max(by1, y + ry);
+    }
+  }
+  if (bx1 - bx0 < 0.005 || by1 - by0 < 0.005) return { attachments: [], outline: [] };
+  // Umgebung mit einbeziehen: die Markierung muss den Anbau nur berühren
+  const ex = (bx1 - bx0) * 0.4, ey = (by1 - by0) * 0.4;
+  bx0 = clamp(bx0 - ex, 0, 1); by0 = clamp(by0 - ey, 0, 1); bx1 = clamp(bx1 + ex, 0, 1); by1 = clamp(by1 + ey, 0, 1);
+
+  // Ausschnitt in hoher Auflösung
+  const sw = (bx1 - bx0) * NW, sh = (by1 - by0) * NH;
+  const scale = Math.min(1, ATTACH_SIZE / Math.max(sw, sh));
+  const W = Math.max(8, Math.round(sw * scale)), H = Math.max(8, Math.round(sh * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(src.img, bx0 * NW, by0 * NH, sw, sh, 0, 0, W, H);
+  const data = ctx.getImageData(0, 0, W, H).data;
+
+  // Markierung rastern (Radierer-Striche nehmen wieder weg)
+  ctx.clearRect(0, 0, W, H);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const st of strokes) {
+    ctx.globalCompositeOperation = st.erase ? 'destination-out' : 'source-over';
+    ctx.strokeStyle = '#000';
+    ctx.fillStyle = '#000';
+    ctx.lineWidth = 2 * st.r * NW * scale;
+    const px = ([x, y]) => [(x - bx0) * NW * scale, (y - by0) * NH * scale];
+    ctx.beginPath();
+    st.pts.forEach((q, i) => { const [x, y] = px(q); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    if (st.pts.length === 1) { const [x, y] = px(st.pts[0]); ctx.arc(x, y, st.r * NW * scale, 0, Math.PI * 2); ctx.fill(); }
+    else ctx.stroke();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+  const mdata = ctx.getImageData(0, 0, W, H).data;
+
+  // Umrechnung Ausschnitt-Pixel -> Analyse-Pixel
+  const toA = (X, Y) => [(bx0 * NW + X / scale) * (IW / NW), (by0 * NH + Y / scale) * (IH / NH)];
+  const margin = 1.5 + 0.01 * hgt;
+  const insideBody = (X, Y) => {
+    const [ax, ay] = toA(X, Y);
+    const row = Math.round(ay - top);
+    if (row < -rimRows || row >= hw.length + baseRows) return false;
+    const r = hw[clamp(row, 0, hw.length - 1)];
+    return Math.abs(ax - axis) <= r + margin;
+  };
+
+  // Farbabstand zum Hintergrund und eigene Schwelle im markierten Bereich
+  const N = W * H;
+  const mask = new Uint8Array(N);
+  const dist = new Float32Array(N);
+  const regionVals = [];
+  let dMax = 0;
+  for (let k = 0; k < N; k++) {
+    const i = k * 4;
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    const l = 0.299 * r + 0.587 * g + 0.114 * b;
+    const Yv = l * 0.6, Uv = b - l, Vv = r - l;
+    let best = Infinity;
+    for (const s of samples) {
+      const d = (Yv - s[0]) ** 2 + (Uv - s[1]) ** 2 + (Vv - s[2]) ** 2;
+      if (d < best) best = d;
+    }
+    dist[k] = Math.sqrt(best);
+    if (mdata[i + 3] > 0) {
+      mask[k] = 1;
+      regionVals.push(dist[k]);
+      if (dist[k] > dMax) dMax = dist[k];
+    }
+  }
+  const Tloc = clamp(regionVals.length > 50 ? otsu(regionVals, dMax) : T, T * 0.6, T * 1.6);
+
+  let A = new Uint8Array(N);
+  for (let k = 0; k < N; k++) {
+    if (dist[k] >= Tloc && !insideBody(k % W, Math.floor(k / W))) A[k] = 1;
+  }
+
+  // Bereinigen: Krümel weg (Öffnen), kleine Lücken zu (Schließen)
+  const rad = Math.max(1, Math.round(Math.max(W, H) / 280));
+  A = dilate(erode(A, W, H, rad), W, H, rad);
+  A = erode(dilate(A, W, H, rad), W, H, rad);
+
+  // Nur Flächen behalten, die die Markierung berühren
+  {
+    const { lab, info } = components(A, W, H, 1);
+    const hits = new Int32Array(info.length + 1);
+    for (let k = 0; k < N; k++) if (lab[k] && mask[k]) hits[lab[k]]++;
+    for (let k = 0; k < N; k++) {
+      if (!lab[k]) continue;
+      const id = lab[k];
+      if (hits[id] < Math.max(15, info[id - 1].area * 0.03)) A[k] = 0;
+    }
+  }
+  A = keepLarge(A, W, H);
+  A = fillSmallHoles(A, W, H);
+
+  // Kontur nachziehen, vereinfachen, glätten
+  const rawContours = traceContours(A, W, H).filter(c => c.length >= 12);
+  const attachments = [];
+  const outline = [];
+  for (const c of rawContours) {
+    let pts = smoothClosed(simplifyClosed(c, 0.8), 2);
+    outline.push(pts.map(([X, Y]) => [bx0 + X / scale / NW, by0 + Y / scale / NH]));
+    // in Blaupausen-Koordinaten: x und t in Einheiten der Stückhöhe
+    const norm = pts.map(([X, Y]) => { const [ax, ay] = toA(X, Y); return [(ax - axis) / hgt, (ay - top) / hgt]; });
+    // Abschnitte direkt an der Wand des Stücks weglassen – dort läuft die Körperlinie
+    const near = ([x, t]) => {
+      const row = Math.round(t * hgt);
+      return row >= 0 && row < hw.length && Math.abs(x) * hgt <= hw[row] + margin + 2;
+    };
+    const lines = splitOpen(norm, near).filter(l => l.length >= 3)
+      .map(l => l.map(([x, t]) => [Math.round(x * 10000) / 10000, Math.round(t * 10000) / 10000]));
+    if (lines.length) attachments.push(lines);
+  }
+  // Konturen eines Anbaus (außen + Loch) zusammenfassen: nach Lage gruppieren
+  const groups = [];
+  for (const lines of attachments) {
+    const xs = lines.flat().map(p => p[0]), ts = lines.flat().map(p => p[1]);
+    const box = [Math.min(...xs), Math.min(...ts), Math.max(...xs), Math.max(...ts)];
+    const g = groups.find(o => box[0] >= o.box[0] - 0.01 && box[2] <= o.box[2] + 0.01 && box[1] >= o.box[1] - 0.01 && box[3] <= o.box[3] + 0.01);
+    if (g) g.lines.push(...lines);
+    else groups.push({ box, lines: [...lines] });
+  }
+  return {
+    attachments: groups.map(g => ({ lines: g.lines, side: g.box[0] + g.box[2] >= 0 ? 'right' : 'left' })),
+    outline,
+  };
+}
+
+function erode(A, W, H, r) {
+  let cur = A;
+  for (let it = 0; it < r; it++) {
+    const out = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const k = y * W + x;
+      out[k] = cur[k] && (x === 0 || cur[k - 1]) && (x === W - 1 || cur[k + 1]) && (y === 0 || cur[k - W]) && (y === H - 1 || cur[k + W]) ? 1 : 0;
+    }
+    cur = out;
+  }
+  return cur;
+}
+
+function dilate(A, W, H, r) {
+  let cur = A;
+  for (let it = 0; it < r; it++) {
+    const out = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const k = y * W + x;
+      out[k] = cur[k] || (x > 0 && cur[k - 1]) || (x < W - 1 && cur[k + 1]) || (y > 0 && cur[k - W]) || (y < H - 1 && cur[k + W]) ? 1 : 0;
+    }
+    cur = out;
+  }
+  return cur;
+}
+
+// Zusammenhängende Flächen mit Wert `val` beschriften
+function components(A, W, H, val) {
+  const N = W * H;
+  const lab = new Int32Array(N);
+  const queue = new Int32Array(N);
+  const info = [];
+  for (let s = 0; s < N; s++) {
+    if (A[s] !== val || lab[s]) continue;
+    const id = info.length + 1;
+    let qh = 0, qt = 0, area = 0, border = false;
+    queue[qt++] = s;
+    lab[s] = id;
+    while (qh < qt) {
+      const p = queue[qh++];
+      area++;
+      const x = p % W, y = (p / W) | 0;
+      if (x === 0 || y === 0 || x === W - 1 || y === H - 1) border = true;
+      if (x > 0 && A[p - 1] === val && !lab[p - 1]) { lab[p - 1] = id; queue[qt++] = p - 1; }
+      if (x < W - 1 && A[p + 1] === val && !lab[p + 1]) { lab[p + 1] = id; queue[qt++] = p + 1; }
+      if (y > 0 && A[p - W] === val && !lab[p - W]) { lab[p - W] = id; queue[qt++] = p - W; }
+      if (y < H - 1 && A[p + W] === val && !lab[p + W]) { lab[p + W] = id; queue[qt++] = p + W; }
+    }
+    info.push({ area, border });
+  }
+  return { lab, info };
+}
+
+function keepLarge(A, W, H) {
+  const { lab, info } = components(A, W, H, 1);
+  const maxArea = Math.max(0, ...info.map(i => i.area));
+  const out = new Uint8Array(W * H);
+  for (let k = 0; k < W * H; k++) if (lab[k] && info[lab[k] - 1].area >= Math.max(30, maxArea * 0.1)) out[k] = 1;
+  return out;
+}
+
+function fillSmallHoles(A, W, H) {
+  let total = 0;
+  for (const v of A) total += v;
+  const { lab, info } = components(A, W, H, 0);
+  const out = A.slice();
+  for (let k = 0; k < W * H; k++) {
+    if (lab[k]) { const i = info[lab[k] - 1]; if (!i.border && i.area < total * 0.04) out[k] = 1; }
+  }
+  return out;
+}
+
+// Marching Squares: geschlossene Konturen um die Fläche
+function traceContours(A, W, H) {
+  const v = (x, y) => (x >= 0 && y >= 0 && x < W && y < H && A[y * W + x] ? 1 : 0);
+  const adj = new Map();
+  const link = (a, b) => {
+    const ka = a.join(','), kb = b.join(',');
+    if (!adj.has(ka)) adj.set(ka, { p: a, n: [] });
+    if (!adj.has(kb)) adj.set(kb, { p: b, n: [] });
+    adj.get(ka).n.push(kb);
+    adj.get(kb).n.push(ka);
+  };
+  for (let y = -1; y < H; y++) {
+    for (let x = -1; x < W; x++) {
+      const c = v(x, y) * 8 + v(x + 1, y) * 4 + v(x + 1, y + 1) * 2 + v(x, y + 1);
+      if (c === 0 || c === 15) continue;
+      // Kantenmitten (doppelt, damit ganzzahlig): oben, rechts, unten, links
+      const T_ = [2 * x + 1, 2 * y], R = [2 * x + 2, 2 * y + 1], B = [2 * x + 1, 2 * y + 2], L = [2 * x, 2 * y + 1];
+      const segs = {
+        1: [[L, B]], 2: [[B, R]], 3: [[L, R]], 4: [[T_, R]], 5: [[T_, L], [B, R]], 6: [[T_, B]], 7: [[T_, L]],
+        8: [[T_, L]], 9: [[T_, B]], 10: [[T_, R], [L, B]], 11: [[T_, R]], 12: [[L, R]], 13: [[B, R]], 14: [[L, B]],
+      }[c];
+      for (const [a, b] of segs) link(a, b);
+    }
+  }
+  const seen = new Set();
+  const contours = [];
+  for (const [start, node] of adj) {
+    if (seen.has(start)) continue;
+    const poly = [];
+    let prev = null, cur = start;
+    while (cur && !seen.has(cur)) {
+      seen.add(cur);
+      const nd = adj.get(cur);
+      poly.push([nd.p[0] / 2, nd.p[1] / 2]);
+      const next = nd.n.find(k => k !== prev && !seen.has(k));
+      prev = cur;
+      cur = next;
+    }
+    if (poly.length > 2) contours.push(poly);
+    void node;
+  }
+  return contours;
+}
+
+function simplifyClosed(pts, eps) {
+  const dp = (arr) => {
+    if (arr.length < 3) return arr;
+    const [ax, ay] = arr[0], [bx, by] = arr[arr.length - 1];
+    const len = Math.hypot(bx - ax, by - ay) || 1;
+    let maxD = -1, idx = 0;
+    for (let i = 1; i < arr.length - 1; i++) {
+      const d = Math.abs((bx - ax) * (ay - arr[i][1]) - (ax - arr[i][0]) * (by - ay)) / len;
+      if (d > maxD) { maxD = d; idx = i; }
+    }
+    if (maxD <= eps) return [arr[0], arr[arr.length - 1]];
+    return [...dp(arr.slice(0, idx + 1)).slice(0, -1), ...dp(arr.slice(idx))];
+  };
+  const half = Math.floor(pts.length / 2);
+  return [...dp(pts.slice(0, half + 1)).slice(0, -1), ...dp([...pts.slice(half), pts[0]]).slice(0, -1)];
+}
+
+// Chaikin-Glättung für geschlossene Linien
+function smoothClosed(pts, iterations) {
+  let cur = pts;
+  for (let it = 0; it < iterations; it++) {
+    const out = [];
+    for (let i = 0; i < cur.length; i++) {
+      const [ax, ay] = cur[i], [bx, by] = cur[(i + 1) % cur.length];
+      out.push([0.75 * ax + 0.25 * bx, 0.75 * ay + 0.25 * by], [0.25 * ax + 0.75 * bx, 0.25 * ay + 0.75 * by]);
+    }
+    cur = out;
+  }
+  return cur;
+}
+
+// Geschlossene Linie an Stellen auftrennen, die `drop` erfüllen
+function splitOpen(pts, drop) {
+  const keep = pts.map(p => !drop(p));
+  if (keep.every(Boolean)) return [[...pts, pts[0]]];
+  const start = keep.findIndex(k => !k);
+  const lines = [];
+  let cur = [];
+  for (let j = 1; j <= pts.length; j++) {
+    const i = (start + j) % pts.length;
+    if (keep[i]) cur.push(pts[i]);
+    else if (cur.length) { lines.push(cur); cur = []; }
+  }
+  if (cur.length) lines.push(cur);
+  return lines;
 }
 
 function otsu(values, max) {
@@ -479,17 +799,29 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
   const n = prof.length;
   const rmax = Math.max(...prof, 0.02);
   const W = 400;
-  const Hd = Math.min(340, 92 / rmax);
+  const rAt = profileAt(prof);
+
+  // Anbauten (Henkel …): liegen alle auf einer Seite, werden sie links gezeichnet,
+  // damit rechts Platz für die Beschriftung bleibt.
+  const rawAtt = bp.attachments || [];
+  const flip = rawAtt.length && rawAtt.every(a => a.side === 'right') ? -1 : 1;
+  const atts = rawAtt.map(a => ({ ...a, lines: a.lines.map(l => l.map(([x, t]) => [x * flip, t])) }));
+  const attPts = atts.flatMap(a => a.lines.flat());
+  const extL = Math.max(rmax, ...attPts.map(p => -p[0]));
+  const extR = Math.max(rmax, ...attPts.map(p => p[0]));
+  const minT = Math.min(0, ...attPts.map(p => p[1]));
+  const maxT = Math.max(1, ...attPts.map(p => p[1]));
+
+  const Hd = Math.min(340, 184 / (extL + extR));
   const half = rmax * Hd;
   const titleLines = wrap(title, 22).slice(0, 2);
   const titleH = titleLines.length ? 30 + titleLines.length * 26 : 24;
-  const top = titleH + prof[0] * Hd * ELLIPSE + 22;
+  const top = titleH + Math.max(prof[0] * Hd * ELLIPSE, -minT * Hd) + 22;
   const bottom = top + Hd;
-  const axis = 64 + half;
-  const labelX = Math.min(axis + half + 34, W - 118);
+  const axis = 64 + extL * Hd;
+  const labelX = Math.min(axis + extR * Hd + 34, W - 118);
   const est = estimate(bp, values, pos);
 
-  const rAt = profileAt(prof);
   const points = effectivePoints(bp);
   const yOf = t => top + t * Hd;
 
@@ -507,6 +839,26 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
   shape += `<ellipse cx="${axis}" cy="${top}" rx="${(prof[0] * Hd).toFixed(1)}" ry="${(prof[0] * Hd * ELLIPSE).toFixed(1)}"/>`;
   shape += `<path d="${arc(1, true)}"/><path d="${arc(1, false)}" class="dash"/>`;
   for (const p of interior) shape += `<path d="${arc(p.t, true)}" class="thin"/><path d="${arc(p.t, false)}" class="dash"/>`;
+  for (const a of atts) {
+    for (const l of a.lines) shape += `<path d="${l.map(([x, t], i) => `${i ? 'L' : 'M'}${(axis + x * Hd).toFixed(1)} ${yOf(t).toFixed(1)}`).join('')}"/>`;
+  }
+
+  // Maße der Anbauten als Text: Ansatzhöhen und wie weit sie abstehen
+  const attInfo = [];
+  atts.forEach((a, i) => {
+    const pts = a.lines.flat();
+    const t0 = Math.min(...pts.map(p => p[1]));
+    const t1 = Math.max(...pts.map(p => p[1]));
+    const reach = Math.max(0, ...pts.map(([x, t]) => Math.abs(x) - rAt(Math.max(0, Math.min(1, t)))));
+    const name = a.label || (atts.length > 1 ? `Anbau ${i + 1}` : 'Henkel');
+    if (est.scale) {
+      attInfo.push(`${name}: ≈ ${fmtCm((t1 - t0) * est.scale)} hoch, steht ≈ ${fmtCm(reach * est.scale)} ab`);
+      attInfo.push(`ansetzen auf ≈ ${fmtCm(Math.max(0, 1 - t1) * est.scale)} und ≈ ${fmtCm(Math.max(0, 1 - t0) * est.scale)} Höhe`);
+    } else {
+      attInfo.push(`${name}: ${Math.round((t1 - t0) * 100)} % der Höhe, steht ${Math.round(reach * 100)} % ab`);
+    }
+  });
+  info = [...info, ...attInfo];
 
   // Beschriftungen rechts, ohne Überlappung
   const items = points.filter(p => p.t != null).map(p => ({ p, yA: yOf(p.t), xA: axis + rAt(p.t) * Hd })).sort((a, b) => a.yA - b.yA);
@@ -544,7 +896,7 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
 
   // Höhenmaß links
   const hp = points.find(p => p.key === 'hoehe');
-  const hx = axis - half - 30;
+  const hx = axis - extL * Hd - 30;
   let height = '';
   if (hp) {
     const v = valueText(hp);
@@ -559,7 +911,7 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
   }
 
   const lastLabel = items.length ? items[items.length - 1].yL + 34 : 0;
-  const infoTop = Math.max(bottom + rAt(1) * Hd * ELLIPSE + 40, lastLabel + 16);
+  const infoTop = Math.max(Math.max(bottom + rAt(1) * Hd * ELLIPSE, top + maxT * Hd) + 40, lastLabel + 16);
   const infoSvg = info.map((line, i) => `<text x="22" y="${infoTop + i * 21}" class="info${i ? '' : ' strong'}">${escXml(line)}</text>`).join('');
   const H = Math.ceil(infoTop + Math.max(0, info.length - 1) * 21 + 26);
 

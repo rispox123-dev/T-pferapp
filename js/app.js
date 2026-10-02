@@ -1,5 +1,6 @@
 import * as db from './db.js';
 import { processImage, blobToDataUrl, dataUrlToBlob } from './image.js';
+import { analyze, findPoints, estimate, renderBlueprint, loadForAnalysis, hashSeed, DEFAULT_CROP, DEFAULT_SENS } from './blueprint.js';
 
 // ---------------------------------------------------------------------------
 // Fachliche Listen
@@ -378,6 +379,20 @@ async function viewPiece(id) {
   $app.innerHTML = `
     ${p.photos?.length ? `<div class="gallery">${p.photos.map(ph => thumb(ph, { full: true, zoom: true })).join('')}</div>` : ''}
 
+    ${p.blueprint ? `<div class="card bp-card">
+        <div class="bp-head"><h2>Blaupause</h2><span class="small muted">Maß antippen zum Eintragen</span></div>
+        <div id="bp"></div>
+        <div class="btn-row" style="margin:12px 0 2px">
+          <a class="btn small primary" href="#/werkstueck/${id}/blaupause">Groß anzeigen</a>
+          <a class="btn small" href="#/werkstueck/${id}/umriss">Umriss anpassen</a>
+        </div>
+      </div>`
+    : p.photos?.length ? `<div class="card">
+        <h2>Blaupause</h2>
+        <p class="small muted" style="margin-top:0">Aus einem Foto deines Stücks (genau von der Seite) zeichnet die App eine Blaupause mit allen wichtigen Maßen.</p>
+        <a class="btn small primary" href="#/werkstueck/${id}/umriss" style="margin-bottom:6px">Blaupause erstellen</a>
+      </div>` : ''}
+
     <div class="card">
       <h2>Ton</h2>
       <dl class="facts">
@@ -416,6 +431,13 @@ async function viewPiece(id) {
     <div class="btn-row"><button class="btn danger" id="del">Werkstück löschen</button></div>`;
 
   hydratePhotos();
+  if (p.blueprint) {
+    mountBlueprint($app.querySelector('#bp'), p, async () => {
+      const y = window.scrollY;
+      await viewPiece(id);
+      window.scrollTo(0, y);
+    });
+  }
   $app.querySelector('#del').onclick = async () => {
     if (!confirm(`„${p.name || 'Werkstück'}“ wirklich löschen? Glasurprotokolle bleiben erhalten.`)) return;
     for (const ph of p.photos || []) await deletePhoto(ph);
@@ -527,11 +549,318 @@ async function viewPieceForm(id, params) {
       updatedAt: now,
     };
     if (!obj.name) obj.name = obj.tonsorte ? `Stück aus ${obj.tonsorte}` : 'Werkstück';
+    // Neues Foto → Form automatisch erkennen und Blaupause zeichnen
+    if (photos.length && !photos.includes(obj.blueprint?.photoId)) {
+      toast('Form wird erkannt …');
+      try { obj.blueprint = await createBlueprint(photos[0], obj.blueprint); } catch (err) { console.warn('Blaupause:', err.message); }
+    }
     await db.put('pieces', obj);
     await session.commit();
     toast('Gespeichert');
     finish(`#/werkstueck/${obj.id}`, !!id);
   };
+}
+
+// ---------------------------------------------------------------------------
+// Blaupause
+// ---------------------------------------------------------------------------
+
+// Diese Stellen der Blaupause entsprechen den Maßfeldern „nass / frisch“ des Werkstücks
+const BP_FIELDS = { hoehe: 'hoehe', rand: 'dOben', bauch: 'dMax', fuss: 'dBoden' };
+
+function bpData(p) {
+  const values = { ...(p.blueprint?.values || {}) };
+  for (const [key, f] of Object.entries(BP_FIELDS)) values[key] = isNum(p.nass?.[f]) ? Number(p.nass[f]) : null;
+  return { values, pos: { ...(p.blueprint?.pos || {}) } };
+}
+
+function bpInfo(p) {
+  const lines = [];
+  const ton = [isNum(p.tonmenge) ? `Ton ${fmt(p.tonmenge, 0)} g` : '', p.tonsorte].filter(Boolean).join(' · ');
+  if (ton) lines.push(ton);
+  const rest = [isNum(p.nass?.wand) ? `Wand ${fmt(p.nass.wand)} mm` : '', isNum(p.nass?.boden) ? `Boden ${fmt(p.nass.boden)} mm` : '', p.technik].filter(Boolean).join(' · ');
+  if (rest) lines.push(rest);
+  return lines;
+}
+
+function blueprintSvg(p, profile, interactive) {
+  const bp = profile ? { profile, points: findPoints(profile) } : p.blueprint;
+  return renderBlueprint(bp, { ...bpData(p), title: p.name, info: bpInfo(p), interactive, seed: hashSeed(p.id || p.name) });
+}
+
+function makeBlueprint(photoId, crop, sens, profile, prev) {
+  return { photoId, crop, sens, profile, points: findPoints(profile), values: prev?.values || {}, pos: prev?.pos || {} };
+}
+
+async function createBlueprint(photoId, prev) {
+  const photo = await db.get('photos', photoId);
+  if (!photo) throw new Error('Foto nicht gefunden');
+  const src = await loadForAnalysis(photo.blob);
+  const { profile } = analyze(src, { crop: DEFAULT_CROP, sens: DEFAULT_SENS });
+  return makeBlueprint(photoId, { ...DEFAULT_CROP }, DEFAULT_SENS, profile, prev);
+}
+
+function measureDialog({ title, isHeight, value, est, showPos, pos, posEst }) {
+  return new Promise(resolve => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'sheet';
+    dlg.innerHTML = `<form method="dialog">
+      <h2>${esc(title)}</h2>
+      ${field(isHeight ? 'Höhe gesamt' : 'Durchmesser', 'value', value ?? '', { type: 'number', unit: 'cm', placeholder: est ? `≈ ${fmt(est)}` : '' })}
+      ${showPos ? field('Auf welcher Höhe? (vom Boden gemessen)', 'pos', pos ?? '', { type: 'number', unit: 'cm', placeholder: posEst ? `≈ ${fmt(posEst)}` : '' }) : ''}
+      <p class="hint">${est && value == null ? `Aus dem Foto geschätzt: ≈ ${fmt(est)} cm. ` : ''}Leeres Feld löscht den Wert.</p>
+      <div class="sheet-buttons"><button class="btn primary" value="ok">Speichern</button><button class="btn" value="cancel">Abbrechen</button></div>
+    </form>`;
+    document.body.append(dlg);
+    dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close('cancel'); });
+    dlg.addEventListener('close', () => {
+      const f = dlg.querySelector('form');
+      const res = dlg.returnValue === 'ok' ? { value: numVal(f, 'value'), pos: showPos ? numVal(f, 'pos') : null } : null;
+      dlg.remove();
+      resolve(res);
+    });
+    dlg.showModal();
+    dlg.querySelector('input').focus();
+  });
+}
+
+// Blaupause anzeigen; Maße lassen sich durch Antippen eintragen
+function mountBlueprint(container, p, onSaved) {
+  const render = () => { container.innerHTML = blueprintSvg(p, null, true); };
+  const edit = async key => {
+    const pt = p.blueprint.points.find(x => x.key === key);
+    if (!pt) return;
+    const { values, pos } = bpData(p);
+    const est = estimate(p.blueprint, values, pos);
+    const interior = pt.t > 0 && pt.t < 1;
+    const res = await measureDialog({
+      title: pt.label, isHeight: key === 'hoehe', value: values[key], est: est.value(pt),
+      showPos: interior, pos: pos[key], posEst: est.pos(pt),
+    });
+    if (!res) return;
+    if (BP_FIELDS[key]) p.nass = { ...(p.nass || {}), [BP_FIELDS[key]]: res.value };
+    else p.blueprint.values = { ...p.blueprint.values, [key]: res.value };
+    if (interior) p.blueprint.pos = { ...p.blueprint.pos, [key]: res.pos };
+    p.updatedAt = new Date().toISOString();
+    await db.put('pieces', p);
+    render();
+    onSaved?.();
+  };
+  container.addEventListener('click', e => {
+    const g = e.target.closest('[data-bp-key]');
+    if (g) edit(g.dataset.bpKey);
+  });
+  container.addEventListener('keydown', e => {
+    const g = e.target.closest?.('[data-bp-key]');
+    if (g && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); edit(g.dataset.bpKey); }
+  });
+  render();
+}
+
+let wakeLock = null;
+
+async function viewBlueprint(id) {
+  const p = await db.get('pieces', id);
+  if (!p) return notFound();
+  if (!p.blueprint) return go(`#/werkstueck/${id}/umriss`, true);
+  setHeader({ title: 'Blaupause', back: `#/werkstueck/${id}`, actions: `<a class="icon-btn" href="#/werkstueck/${id}/umriss">Umriss</a>` });
+  $app.innerHTML = `<div class="bp-full" id="bp"></div>
+    <p class="small muted" style="text-align:center">Tippe auf ein Maß, um es einzutragen.<br>Werte mit ≈ sind aus dem Foto geschätzt.</p>`;
+  mountBlueprint($app.querySelector('#bp'), p);
+  // Bildschirm anlassen, solange die Blaupause an der Drehscheibe offen ist
+  try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* nicht unterstützt */ }
+}
+
+async function viewBlueprintEditor(id) {
+  const p = await db.get('pieces', id);
+  if (!p) return notFound();
+  setHeader({ title: 'Umriss erkennen', back: `#/werkstueck/${id}` });
+  if (!p.photos?.length) {
+    $app.innerHTML = `<div class="empty"><p>Füge dem Werkstück zuerst ein Foto hinzu – am besten genau von der Seite.</p>
+      <a class="btn primary" href="#/werkstueck/${id}/bearbeiten">Foto hinzufügen</a></div>`;
+    return;
+  }
+  const prev = p.blueprint;
+  const st = {
+    photoId: prev && p.photos.includes(prev.photoId) ? prev.photoId : p.photos[0],
+    crop: { ...(prev?.crop || DEFAULT_CROP) },
+    sens: prev?.sens ?? DEFAULT_SENS,
+    src: null,
+    result: null,
+  };
+
+  $app.innerHTML = `
+    <div class="info-box"><p>Am besten klappt es mit einem Foto <strong>genau von der Seite</strong> vor einem ruhigen Hintergrund. Ziehe die Ränder des Rahmens eng um dein Stück (ohne Schatten).</p></div>
+    ${p.photos.length > 1 ? `<div class="bp-choice">${p.photos.map(ph => `<button type="button" data-photo-id="${ph}" class="${ph === st.photoId ? 'active' : ''}" aria-label="Dieses Foto verwenden">${thumb(ph)}</button>`).join('')}</div>` : ''}
+    <div class="bp-editor"><canvas></canvas></div>
+    <label class="range-field"><span>Empfindlichkeit</span>
+      <input type="range" min="0" max="100" value="${st.sens}" id="sens" class="compare-range"></label>
+    <p class="hint" id="bp-status" style="margin:0 0 4px"></p>
+    <div class="btn-row">
+      <button type="button" class="btn" id="cancel">Abbrechen</button>
+      <button type="button" class="btn primary" id="apply" disabled>Übernehmen</button>
+    </div>
+    <h3 class="section-title">Vorschau</h3>
+    <div class="bp-full" id="bp-preview"></div>
+    ${prev ? '<div class="btn-row"><button class="btn danger" id="bp-remove">Blaupause entfernen</button></div>' : ''}`;
+  hydratePhotos();
+
+  const canvas = $app.querySelector('canvas');
+  const ctx = canvas.getContext('2d');
+  const statusEl = $app.querySelector('#bp-status');
+  const previewEl = $app.querySelector('#bp-preview');
+  const applyBtn = $app.querySelector('#apply');
+  let box = { w: 0, h: 0 };
+
+  const layout = () => {
+    const img = st.src.img;
+    const maxW = canvas.parentElement.clientWidth;
+    const maxH = Math.min(window.innerHeight * 0.55, 560);
+    const ratio = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight);
+    box = { w: Math.round(img.naturalWidth * ratio), h: Math.round(img.naturalHeight * ratio) };
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = box.w * dpr;
+    canvas.height = box.h * dpr;
+    canvas.style.width = `${box.w}px`;
+    canvas.style.height = `${box.h}px`;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  };
+
+  const draw = () => {
+    const { w, h } = box;
+    const c = st.crop;
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(st.src.img, 0, 0, w, h);
+    ctx.fillStyle = 'rgba(0,0,0,.5)';
+    ctx.fillRect(0, 0, w, c.y0 * h);
+    ctx.fillRect(0, c.y1 * h, w, h - c.y1 * h);
+    ctx.fillRect(0, c.y0 * h, c.x0 * w, (c.y1 - c.y0) * h);
+    ctx.fillRect(c.x1 * w, c.y0 * h, w - c.x1 * w, (c.y1 - c.y0) * h);
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(c.x0 * w, c.y0 * h, (c.x1 - c.x0) * w, (c.y1 - c.y0) * h);
+    const o = st.result?.outline;
+    if (o) {
+      ctx.strokeStyle = '#ff7a3d';
+      ctx.lineWidth = 3;
+      ctx.lineJoin = 'round';
+      for (const side of [o.left, o.right]) {
+        ctx.beginPath();
+        side.forEach(([x, y], i) => (i ? ctx.lineTo(x * w, y * h) : ctx.moveTo(x * w, y * h)));
+        ctx.stroke();
+      }
+      ctx.setLineDash([6, 6]);
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = '#fff';
+      ctx.beginPath();
+      ctx.moveTo(o.axis * w, o.top * h);
+      ctx.lineTo(o.axis * w, o.bottom * h);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    for (const [x, y] of [[(c.x0 + c.x1) / 2, c.y0], [(c.x0 + c.x1) / 2, c.y1], [c.x0, (c.y0 + c.y1) / 2], [c.x1, (c.y0 + c.y1) / 2]]) {
+      ctx.beginPath();
+      ctx.arc(x * w, y * h, 10, 0, Math.PI * 2);
+      ctx.fillStyle = '#fff';
+      ctx.fill();
+      ctx.strokeStyle = '#b5643c';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+  };
+
+  const run = () => {
+    let error = '';
+    try {
+      st.result = analyze(st.src, { crop: st.crop, sens: st.sens });
+    } catch (err) {
+      st.result = null;
+      error = err.message;
+    }
+    draw();
+    statusEl.textContent = error || 'Orange = erkannter Umriss. Passt er nicht, verschiebe den Rahmen oder die Empfindlichkeit.';
+    statusEl.style.color = error ? 'var(--bad)' : '';
+    previewEl.innerHTML = st.result ? blueprintSvg(p, st.result.profile, false) : '';
+    applyBtn.disabled = !st.result;
+  };
+
+  const load = async () => {
+    statusEl.textContent = 'Foto wird analysiert …';
+    const photo = await db.get('photos', st.photoId);
+    st.src = await loadForAnalysis(photo.blob);
+    layout();
+    run();
+  };
+
+  // Rahmen an den Kanten ziehen
+  let drag = null;
+  const rel = e => {
+    const r = canvas.getBoundingClientRect();
+    return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height];
+  };
+  canvas.addEventListener('pointerdown', e => {
+    const [x, y] = rel(e);
+    const c = st.crop;
+    const tx = 32 / box.w, ty = 32 / box.h;
+    const inY = y > c.y0 - ty && y < c.y1 + ty;
+    const inX = x > c.x0 - tx && x < c.x1 + tx;
+    const cand = [['x0', Math.abs(x - c.x0) / tx, inY], ['x1', Math.abs(x - c.x1) / tx, inY], ['y0', Math.abs(y - c.y0) / ty, inX], ['y1', Math.abs(y - c.y1) / ty, inX]]
+      .filter(a => a[2] && a[1] < 1)
+      .sort((a, b) => a[1] - b[1]);
+    if (!cand.length) return;
+    drag = cand[0][0];
+    canvas.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  canvas.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const [x, y] = rel(e);
+    const c = st.crop;
+    const min = 0.08;
+    const cl = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    if (drag === 'x0') c.x0 = cl(x, 0, c.x1 - min);
+    if (drag === 'x1') c.x1 = cl(x, c.x0 + min, 1);
+    if (drag === 'y0') c.y0 = cl(y, 0, c.y1 - min);
+    if (drag === 'y1') c.y1 = cl(y, c.y0 + min, 1);
+    draw();
+  });
+  const endDrag = () => { if (drag) { drag = null; run(); } };
+  canvas.addEventListener('pointerup', endDrag);
+  canvas.addEventListener('pointercancel', endDrag);
+
+  let timer;
+  $app.querySelector('#sens').addEventListener('input', e => {
+    st.sens = Number(e.target.value);
+    clearTimeout(timer);
+    timer = setTimeout(run, 120);
+  });
+
+  $app.querySelector('.bp-choice')?.addEventListener('click', e => {
+    const b = e.target.closest('[data-photo-id]');
+    if (!b || b.dataset.photoId === st.photoId) return;
+    st.photoId = b.dataset.photoId;
+    st.crop = { ...DEFAULT_CROP };
+    $app.querySelectorAll('.bp-choice button').forEach(x => x.classList.toggle('active', x === b));
+    load();
+  });
+
+  $app.querySelector('#cancel').onclick = () => $back.click();
+  applyBtn.onclick = async () => {
+    if (!st.result) return;
+    p.blueprint = makeBlueprint(st.photoId, st.crop, st.sens, st.result.profile, prev);
+    p.updatedAt = new Date().toISOString();
+    await db.put('pieces', p);
+    toast('Blaupause gespeichert');
+    finish(`#/werkstueck/${id}`, true);
+  };
+  $app.querySelector('#bp-remove')?.addEventListener('click', async () => {
+    if (!confirm('Blaupause entfernen? Deine eingetragenen Maße bleiben erhalten.')) return;
+    delete p.blueprint;
+    await db.put('pieces', p);
+    finish(`#/werkstueck/${id}`, true);
+  });
+
+  try { await load(); } catch (err) { statusEl.textContent = err.message; }
 }
 
 // ---------------------------------------------------------------------------
@@ -1151,6 +1480,16 @@ async function viewMore() {
     </div>
 
     <div class="card">
+      <h2>So funktioniert die Blaupause</h2>
+      <ol class="small" style="padding-left:20px;margin:0">
+        <li>Fotografiere dein Stück <strong>genau von der Seite</strong> vor einem ruhigen Hintergrund.</li>
+        <li>Beim Speichern erkennt die App die Form und markiert Rand, Bauch, Hals, Fußansatz und Boden.</li>
+        <li>Tippe ein Maß an, um es einzutragen. Schon ein Maß (z. B. die Höhe) reicht – die übrigen werden aus dem Foto geschätzt (≈).</li>
+        <li>Vor dem Töpfern: Werkstück öffnen → „Groß anzeigen“. Der Bildschirm bleibt dabei an.</li>
+      </ol>
+    </div>
+
+    <div class="card">
       <h2>So funktioniert der Glasurvergleich</h2>
       <ol class="small" style="padding-left:20px;margin:0">
         <li>Glasur ansetzen und unter <strong>Glasuren</strong> mit Litergewicht anlegen.</li>
@@ -1159,7 +1498,7 @@ async function viewMore() {
         <li>Mit dem <strong>Schieberegler</strong> siehst du, was aus jeder Auffälligkeit geworden ist. Bei der Glasur findest du alle Versuche sortiert nach Tauchdauer.</li>
       </ol>
     </div>
-    <p class="small muted" style="text-align:center">Töpferbuch · Version 1.0</p>`;
+    <p class="small muted" style="text-align:center">Töpferbuch · Version 1.1</p>`;
 
   $app.querySelector('#export').onclick = () => exportBackup({ pieces, glazes, firings, photos });
   const fileIn = $app.querySelector('#import-file');
@@ -1225,6 +1564,8 @@ const ROUTES = [
   [/^\/werkstueck\/neu$/, (m, q) => viewPieceForm(null, q), 'werkstuecke'],
   [/^\/werkstueck\/([\w-]+)$/, m => viewPiece(m[1]), 'werkstuecke'],
   [/^\/werkstueck\/([\w-]+)\/bearbeiten$/, (m, q) => viewPieceForm(m[1], q), 'werkstuecke'],
+  [/^\/werkstueck\/([\w-]+)\/blaupause$/, m => viewBlueprint(m[1]), 'werkstuecke'],
+  [/^\/werkstueck\/([\w-]+)\/umriss$/, m => viewBlueprintEditor(m[1]), 'werkstuecke'],
   [/^\/glasieren$/, viewFirings, 'glasieren'],
   [/^\/glasieren\/neu$/, (m, q) => viewFiringForm(null, q), 'glasieren'],
   [/^\/glasieren\/([\w-]+)$/, m => viewFiring(m[1]), 'glasieren'],
@@ -1243,6 +1584,7 @@ async function router() {
   if (typeof history.state?.idx === 'number') historyIdx = history.state.idx;
   else history.replaceState({ idx: ++historyIdx }, '', location.href);
   if (pendingCleanup) { const c = pendingCleanup; pendingCleanup = null; await c(); }
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
   const [path, query = ''] = (location.hash.slice(1) || '/werkstuecke').split('?');
   const params = new URLSearchParams(query);
   for (const [re, view, tab] of ROUTES) {

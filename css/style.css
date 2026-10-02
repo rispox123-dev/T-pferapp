@@ -594,3 +594,33 @@ form .card { padding-bottom: 6px; }
 a { color: var(--accent); }
 .icon-btn { text-decoration: none; }
 .btn { text-align: center; line-height: 1.2; }
+
+/* ---------- Blaupause ---------- */
+.blueprint { display: block; width: 100%; height: auto; border-radius: 12px; }
+.bp-card { padding: 12px; }
+.bp-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 2px 4px 10px; }
+.bp-head h2 { margin: 0; }
+.bp-full { margin-bottom: 12px; }
+.bp-full .blueprint { border-radius: 14px; box-shadow: var(--shadow); }
+.bp-editor { display: flex; justify-content: center; user-select: none; -webkit-user-select: none; }
+.bp-editor canvas { display: block; max-width: 100%; border-radius: 12px; touch-action: none; background: var(--surface-2); }
+.bp-choice { display: flex; gap: 8px; overflow-x: auto; margin-bottom: 12px; }
+.bp-choice button { flex: 0 0 64px; height: 80px; padding: 0; border: 3px solid transparent; border-radius: 12px; overflow: hidden; background: none; cursor: pointer; }
+.bp-choice button.active { border-color: var(--accent); }
+.bp-choice .thumb { height: 100%; }
+.range-field { display: block; margin: 14px 0 2px; }
+.range-field span { display: block; font-size: .85rem; font-weight: 600; color: var(--muted); }
+
+dialog.sheet {
+  width: min(420px, calc(100% - 32px));
+  padding: 20px 18px 6px;
+  border: 0;
+  border-radius: 18px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .3);
+}
+dialog.sheet::backdrop { background: rgba(30, 20, 10, .45); }
+dialog.sheet h2 { margin: 0 0 14px; font-size: 1.15rem; }
+.sheet-buttons { display: flex; flex-direction: row-reverse; gap: 10px; margin: 4px 0 12px; }
+.sheet-buttons .btn { flex: 1; }

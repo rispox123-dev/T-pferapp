@@ -11,7 +11,16 @@ Eine Handy-App für Töpferinnen und Töpfer, die eigene Stücke töpfern und ei
 - Maße **nach dem Brand** → die App berechnet die **Schwindung** deines Tons
 - Beliebige weitere Angaben (z. B. Henkellänge, Fußring)
 - Notizen und Arbeitsschritte
-- **„Nochmal töpfern“**: übernimmt Ton und Maße als Vorlage für ein neues Stück
+- **„Nochmal töpfern“**: übernimmt Ton, Maße und Blaupause als Vorlage für ein neues Stück
+
+### Blaupause aus dem Foto
+- Beim Speichern eines Werkstücks mit Foto erkennt die App automatisch die **Form** (Henkel werden ignoriert)
+- Daraus entsteht eine Zeichnung im Stil einer Seladon-Glasur mit Craquelé: weiße Linien, Ellipsen an den wichtigen Stellen
+- Markante Stellen werden automatisch gefunden: **Öffnung, Hals/Taille, Bauch, Absatz/Fußansatz, Boden, Höhe**
+- **Maß antippen** → Wert eintragen. Schon ein Maß reicht: alle anderen Maße und die Höhe der Stellen werden aus dem Foto **geschätzt (≈)**
+- „Umriss anpassen“: Rahmen enger ziehen, Empfindlichkeit einstellen oder ein anderes Foto wählen
+- „Groß anzeigen“ für die Drehscheibe – der Bildschirm bleibt dabei an
+- Tipp: Foto **genau von der Seite**, vor einem ruhigen, einfarbigen Hintergrund
 
 ### 2. Glasieren – Vorher-Nachher-Protokoll
 - **Foto der glasierten Schrühware vor dem Brand**
@@ -63,5 +72,6 @@ npx http-server -p 8080
 | `js/app.js` | Alle Ansichten und Abläufe |
 | `js/db.js` | Speicherung auf dem Gerät (IndexedDB) |
 | `js/image.js` | Fotos verkleinern |
+| `js/blueprint.js` | Formerkennung und Blaupausen-Zeichnung |
 | `sw.js` | Offline-Betrieb (bei Änderungen `CACHE`-Version erhöhen) |
 | `css/style.css` | Gestaltung (hell und dunkel) |

@@ -9,11 +9,11 @@
 // 4. Aus diesem Profil werden markante Stellen gesucht: Rand, Boden,
 //    breiteste Stelle (Bauch) und engste Stelle (Hals/Taille).
 
-export const PROFILE_POINTS = 120;
+export const PROFILE_POINTS = 200;
 export const DEFAULT_CROP = { x0: 0.03, y0: 0.03, x1: 0.97, y1: 0.97 };
 export const DEFAULT_SENS = 50;
 
-const ANALYSIS_SIZE = 360;
+const ANALYSIS_SIZE = 640;
 const ELLIPSE = 0.2; // Neigung der Ellipsen in der Zeichnung (Blick leicht von oben)
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -170,7 +170,7 @@ export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS } = {}) 
   // Halbe Breite je Zeile (kürzere Seite), dann glätten
   let hw = [];
   for (let y = top; y <= bottom; y++) hw.push(Math.max(0, Math.min(axis - left[y], right[y] - axis) + 0.5));
-  hw = smooth(median(hw, 5), Math.max(1, Math.round(hw.length * 0.01)));
+  hw = smooth(median(hw, 5), Math.max(1, Math.round(hw.length * 0.008)));
 
   // Spitzen der perspektivischen Ellipsen oben und unten abschneiden
   const maxCut = Math.round(hw.length * 0.08);
@@ -181,6 +181,17 @@ export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS } = {}) 
   hw = hw.slice(cutTop, hw.length - cutBot);
   top += cutTop;
   bottom -= cutBot;
+
+  // Von leicht oben fotografiert liegt die breiteste Stelle der Randellipse etwas
+  // unter der Oberkante (unten entsprechend). Die Zeichnung setzt die Ellipsen-
+  // mitte an die Kante, also wird bis dorthin abgeschnitten.
+  const ellTop = ellipseCut(hw);
+  const ellBot = ellipseCut([...hw].reverse());
+  if (ellTop + ellBot < hw.length * 0.5) {
+    hw = hw.slice(ellTop, hw.length - ellBot);
+    top += ellTop;
+    bottom -= ellBot;
+  }
 
   const hgt = hw.length;
   if (hgt < 20) throw new Error('Das erkannte Stück ist zu klein. Ziehe den Rahmen enger.');
@@ -208,6 +219,18 @@ export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS } = {}) 
     profile,
     outline: { left: outlineL, right: outlineR, axis: (axis + x0) / IW, top: (top + y0) / IH, bottom: (bottom + y0) / IH },
   };
+}
+
+// Wie viele Zeilen vom Anfang gehören zur Ellipsen-Rundung? (wächst schnell, dann langsamer)
+function ellipseCut(arr) {
+  const lim = Math.round(arr.length * 0.12);
+  let j = 0;
+  for (let i = 1; i <= lim; i++) if (arr[i] > arr[j]) j = i;
+  if (j < 2 || arr[j] < arr[0] * 1.01 || j > 0.35 * arr[j]) return 0;
+  const h = Math.floor(j / 2);
+  const s1 = (arr[h] - arr[0]) / h;
+  const s2 = (arr[j] - arr[h]) / (j - h);
+  return s1 >= s2 ? j : 0;
 }
 
 function otsu(values, max) {
@@ -253,7 +276,7 @@ function smooth(arr, half) {
 export function findPoints(profile) {
   const n = profile.length;
   const rmax = Math.max(...profile);
-  const minProm = 0.07 * rmax;
+  const minProm = 0.04 * rmax;
   const lo = Math.round(n * 0.08);
   const hi = Math.round(n * 0.92);
   const win = 3;
@@ -281,10 +304,10 @@ export function findPoints(profile) {
   }
 
   // Höchstens zwei Stellen je Art; zwei Bäuche brauchen eine echte Einschnürung dazwischen
-  const pick = (list, isMax) => {
+  const pick = (list, isMax, max) => {
     const out = [];
     for (const c of list.sort((a, b) => b.prom - a.prom)) {
-      if (out.length >= 2) break;
+      if (out.length >= max) break;
       const ok = out.every(o => {
         const between = profile.slice(Math.min(o.i, c.i), Math.max(o.i, c.i) + 1);
         return isMax
@@ -302,13 +325,23 @@ export function findPoints(profile) {
     { key: 'hoehe', label: 'Höhe', t: null, m: 1 },
     { key: 'rand', label: 'Ø Öffnung', t: 0, m: m(0) },
   ];
-  pick(maxes, true).forEach((c, idx) => {
+  const bulges = pick(maxes, true, 2);
+  bulges.forEach((c, idx) => {
     if (idx === 0) points.push({ key: 'bauch', label: 'Ø Bauch', t: t(c.i), m: m(c.i) });
-    else points.push({ key: 'bauch2', label: c.i < points.find(p => p.key === 'bauch').t * (n - 1) ? 'Ø Schulter' : 'Ø Wölbung', t: t(c.i), m: m(c.i) });
+    else points.push({ key: 'bauch2', label: c.i < bulges[0].i ? 'Ø Schulter' : 'Ø Wölbung', t: t(c.i), m: m(c.i) });
   });
-  pick(mins, false).forEach((c, idx) => {
-    if (idx === 0) points.push({ key: 'hals', label: c.i < n / 2 ? 'Ø Hals' : 'Ø Taille', t: t(c.i), m: m(c.i) });
-    else points.push({ key: 'hals2', label: 'Ø Einschnürung', t: t(c.i), m: m(c.i) });
+  // Engstellen: zwischen zwei Wölbungen ist es eine Rille, sonst Hals bzw. Taille
+  let rillen = 0, engen = 0;
+  pick(mins, false, 3).sort((a, b) => a.i - b.i).forEach(c => {
+    const zwischen = bulges.some(b => b.i < c.i) && bulges.some(b => b.i > c.i);
+    if (zwischen) {
+      rillen++;
+      points.push({ key: `rille${rillen}`, label: 'Ø Rille', t: t(c.i), m: m(c.i) });
+    } else {
+      engen++;
+      if (engen === 1) points.push({ key: 'hals', label: c.i < n / 2 ? 'Ø Hals' : 'Ø Taille', t: t(c.i), m: m(c.i) });
+      else points.push({ key: 'hals2', label: 'Ø Einschnürung', t: t(c.i), m: m(c.i) });
+    }
   });
 
   // Absatz: kurzer, steiler Sprung im Profil (z. B. Übergang von Schale zu Fußring)
@@ -327,17 +360,40 @@ export function findPoints(profile) {
   return points;
 }
 
+// Automatisch gefundene Stellen (ohne ausgeblendete) plus eigene Stellen, mit eigenen Namen
+export function effectivePoints(bp) {
+  const hidden = bp.hidden || [];
+  const labels = bp.labels || {};
+  const rAt = profileAt(bp.profile);
+  const pts = bp.points.filter(p => !hidden.includes(p.key)).map(p => ({ ...p, label: labels[p.key] || p.label }));
+  for (const c of bp.custom || []) {
+    pts.push({ key: c.key, label: labels[c.key] || 'Ø Stelle', t: c.t, m: Math.round(2 * rAt(c.t) * 10000) / 10000, custom: true });
+  }
+  return pts;
+}
+
+export function profileAt(prof) {
+  const n = prof.length;
+  return t => {
+    const p = Math.max(0, Math.min(1, t)) * (n - 1);
+    const a = Math.floor(p);
+    const b = Math.min(n - 1, a + 1);
+    return prof[a] + (prof[b] - prof[a]) * (p - a);
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Schätzung: aus einem eingetragenen Maß alle anderen ableiten
 // ---------------------------------------------------------------------------
 
 export function estimate(bp, values = {}, pos = {}) {
   const scales = [];
-  for (const p of bp.points) {
+  const pts = effectivePoints(bp);
+  for (const p of pts) {
     const v = Number(values[p.key]);
     if (values[p.key] != null && v > 0 && p.m > 0) scales.push(v / p.m);
   }
-  for (const p of bp.points) {
+  for (const p of pts) {
     const v = Number(pos[p.key]);
     if (pos[p.key] != null && v > 0 && p.t != null && p.t < 1) scales.push(v / (1 - p.t));
   }
@@ -434,12 +490,8 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
   const labelX = Math.min(axis + half + 34, W - 118);
   const est = estimate(bp, values, pos);
 
-  const rAt = t => {
-    const p = t * (n - 1);
-    const a = Math.floor(p);
-    const b = Math.min(n - 1, a + 1);
-    return prof[a] + (prof[b] - prof[a]) * (p - a);
-  };
+  const rAt = profileAt(prof);
+  const points = effectivePoints(bp);
   const yOf = t => top + t * Hd;
 
   // Kontur
@@ -451,17 +503,17 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
     return `M${(axis - rx).toFixed(1)} ${y.toFixed(1)}A${rx.toFixed(1)} ${ry.toFixed(1)} 0 0 ${front ? 0 : 1} ${(axis + rx).toFixed(1)} ${y.toFixed(1)}`;
   };
 
-  const interior = bp.points.filter(p => p.t != null && p.t > 0 && p.t < 1);
+  const interior = points.filter(p => p.t != null && p.t > 0 && p.t < 1);
   let shape = `<path d="${contour(-1)}"/><path d="${contour(1)}"/>`;
   shape += `<ellipse cx="${axis}" cy="${top}" rx="${(prof[0] * Hd).toFixed(1)}" ry="${(prof[0] * Hd * ELLIPSE).toFixed(1)}"/>`;
   shape += `<path d="${arc(1, true)}"/><path d="${arc(1, false)}" class="dash"/>`;
   for (const p of interior) shape += `<path d="${arc(p.t, true)}" class="thin"/><path d="${arc(p.t, false)}" class="dash"/>`;
 
   // Beschriftungen rechts, ohne Überlappung
-  const items = bp.points.filter(p => p.t != null).map(p => ({ p, yA: yOf(p.t), xA: axis + rAt(p.t) * Hd })).sort((a, b) => a.yA - b.yA);
+  const items = points.filter(p => p.t != null).map(p => ({ p, yA: yOf(p.t), xA: axis + rAt(p.t) * Hd })).sort((a, b) => a.yA - b.yA);
   let prevY = -Infinity;
   for (const it of items) {
-    it.yL = Math.max(it.yA, prevY + 54);
+    it.yL = Math.max(it.yA, prevY + 46);
     prevY = it.yL;
   }
 
@@ -485,14 +537,14 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
     const ps = posText(p);
     labels += `<path d="M${(xA + 4).toFixed(1)} ${yA.toFixed(1)}L${labelX - 22} ${yA.toFixed(1)}L${labelX - 8} ${yL.toFixed(1)}" class="lead"/>`;
     labels += `<circle cx="${xA.toFixed(1)}" cy="${yA.toFixed(1)}" r="3" class="dot"/>`;
-    labels += `<g class="lbl"${btn(p.key)}><rect x="${labelX - 8}" y="${(yL - 24).toFixed(1)}" width="${W - labelX + 6}" height="50" rx="8" class="hit"/>
-      <text x="${labelX}" y="${(yL - 6).toFixed(1)}" class="name">${escXml(p.label)}</text>
-      <text x="${labelX}" y="${(yL + 13).toFixed(1)}" class="${v.cls}">${escXml(v.text)}</text>
-      ${ps ? `<text x="${labelX}" y="${(yL + 27).toFixed(1)}" class="pos">${escXml(ps)}</text>` : ''}</g>`;
+    labels += `<g class="lbl"${btn(p.key)}><rect x="${labelX - 8}" y="${(yL - 19).toFixed(1)}" width="${W - labelX + 6}" height="44" rx="8" class="hit"/>
+      <text x="${labelX}" y="${(yL - 4).toFixed(1)}" class="name">${escXml(p.label)}</text>
+      <text x="${labelX}" y="${(yL + 12).toFixed(1)}" class="${v.cls}">${escXml(v.text)}</text>
+      ${ps ? `<text x="${labelX}" y="${(yL + 24).toFixed(1)}" class="pos">${escXml(ps)}</text>` : ''}</g>`;
   }
 
   // Höhenmaß links
-  const hp = bp.points.find(p => p.key === 'hoehe');
+  const hp = points.find(p => p.key === 'hoehe');
   const hx = axis - half - 30;
   let height = '';
   if (hp) {
@@ -526,15 +578,15 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
     #${uid} .dim { fill: none; stroke: ${INK}; stroke-width: 1.2; opacity: .7; stroke-linecap: round; stroke-linejoin: round; }
     #${uid} .guide { fill: none; stroke: ${INK}; stroke-width: 1; stroke-dasharray: 1.5 4; opacity: .45; }
     #${uid} .hit { fill: transparent; }
-    #${uid} [data-bp-key] { cursor: pointer; }
+    #${uid} [data-bp-key], #${uid} [data-bp-add] { cursor: pointer; }
     #${uid} [data-bp-key]:hover .hit, #${uid} [data-bp-key]:focus .hit { fill: rgba(255,255,255,.28); }
     #${uid} [data-bp-key]:focus { outline: none; }
     #${uid} .title { font-size: 23px; font-weight: 500; letter-spacing: .2px; }
-    #${uid} .name { font-size: 12.5px; fill: ${INK_SOFT}; letter-spacing: .3px; }
-    #${uid} .val { font-size: 17px; font-weight: 600; }
+    #${uid} .name { font-size: 12px; fill: ${INK_SOFT}; letter-spacing: .3px; }
+    #${uid} .val { font-size: 16px; font-weight: 600; }
     #${uid} .val.est { font-weight: 500; font-style: italic; fill: ${INK_SOFT}; }
     #${uid} .val.empty { font-size: 14px; fill: ${CLAY}; }
-    #${uid} .pos { font-size: 11.5px; fill: ${INK_SOFT}; }
+    #${uid} .pos { font-size: 11px; fill: ${INK_SOFT}; }
     #${uid} .info { font-size: 14px; }
     #${uid} .info.strong { font-size: 15px; font-weight: 600; }
   </style>
@@ -552,6 +604,7 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
     <path d="${cr.fine}" fill="none" stroke="#8ea89f" stroke-width=".6" opacity=".45"/>
     ${titleSvg}
     <g class="shape">${shape}</g>
+    ${interactive ? `<rect x="${(axis - half - 8).toFixed(1)}" y="${(top - 6).toFixed(1)}" width="${(2 * half + 16).toFixed(1)}" height="${(Hd + 12).toFixed(1)}" class="hit add" data-bp-add data-top="${top.toFixed(2)}" data-hd="${Hd.toFixed(2)}"/>` : ''}
     ${height}
     ${labels}
     ${infoSvg}

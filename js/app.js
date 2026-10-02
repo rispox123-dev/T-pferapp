@@ -1,6 +1,6 @@
 import * as db from './db.js';
 import { processImage, blobToDataUrl, dataUrlToBlob } from './image.js';
-import { analyze, findPoints, estimate, renderBlueprint, loadForAnalysis, hashSeed, DEFAULT_CROP, DEFAULT_SENS } from './blueprint.js';
+import { analyze, findPoints, estimate, effectivePoints, renderBlueprint, loadForAnalysis, hashSeed, DEFAULT_CROP, DEFAULT_SENS } from './blueprint.js';
 
 // ---------------------------------------------------------------------------
 // Fachliche Listen
@@ -380,7 +380,7 @@ async function viewPiece(id) {
     ${p.photos?.length ? `<div class="gallery">${p.photos.map(ph => thumb(ph, { full: true, zoom: true })).join('')}</div>` : ''}
 
     ${p.blueprint ? `<div class="card bp-card">
-        <div class="bp-head"><h2>Blaupause</h2><span class="small muted">Maß antippen zum Eintragen</span></div>
+        <div class="bp-head"><h2>Blaupause</h2><span class="small muted">Maß oder Form antippen</span></div>
         <div id="bp"></div>
         <div class="btn-row" style="margin:12px 0 2px">
           <a class="btn small primary" href="#/werkstueck/${id}/blaupause">Groß anzeigen</a>
@@ -589,7 +589,15 @@ function blueprintSvg(p, profile, interactive) {
 }
 
 function makeBlueprint(photoId, crop, sens, profile, prev) {
-  return { photoId, crop, sens, profile, points: findPoints(profile), values: prev?.values || {}, pos: prev?.pos || {} };
+  return {
+    photoId, crop, sens, profile,
+    points: findPoints(profile),
+    values: prev?.values || {},
+    pos: prev?.pos || {},
+    labels: prev?.labels || {},
+    hidden: prev?.hidden || [],
+    custom: prev?.custom || [],
+  };
 }
 
 async function createBlueprint(photoId, prev) {
@@ -600,22 +608,27 @@ async function createBlueprint(photoId, prev) {
   return makeBlueprint(photoId, { ...DEFAULT_CROP }, DEFAULT_SENS, profile, prev);
 }
 
-function measureDialog({ title, isHeight, value, est, showPos, pos, posEst }) {
+function measureDialog({ title, isHeight, value, est, showPos, pos, posEst, label, removeText }) {
   return new Promise(resolve => {
     const dlg = document.createElement('dialog');
     dlg.className = 'sheet';
     dlg.innerHTML = `<form method="dialog">
       <h2>${esc(title)}</h2>
+      ${label !== undefined ? field('Bezeichnung', 'label', label, { placeholder: 'z. B. Ø untere Rille' }) : ''}
       ${field(isHeight ? 'Höhe gesamt' : 'Durchmesser', 'value', value ?? '', { type: 'number', unit: 'cm', placeholder: est ? `≈ ${fmt(est)}` : '' })}
       ${showPos ? field('Auf welcher Höhe? (vom Boden gemessen)', 'pos', pos ?? '', { type: 'number', unit: 'cm', placeholder: posEst ? `≈ ${fmt(posEst)}` : '' }) : ''}
       <p class="hint">${est && value == null ? `Aus dem Foto geschätzt: ≈ ${fmt(est)} cm. ` : ''}Leeres Feld löscht den Wert.</p>
       <div class="sheet-buttons"><button class="btn primary" value="ok">Speichern</button><button class="btn" value="cancel">Abbrechen</button></div>
+      ${removeText ? `<button class="btn danger block" value="remove" style="margin-bottom:12px">${esc(removeText)}</button>` : ''}
     </form>`;
     document.body.append(dlg);
     dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close('cancel'); });
     dlg.addEventListener('close', () => {
       const f = dlg.querySelector('form');
-      const res = dlg.returnValue === 'ok' ? { value: numVal(f, 'value'), pos: showPos ? numVal(f, 'pos') : null } : null;
+      const action = dlg.returnValue;
+      const res = action === 'ok' || action === 'remove'
+        ? { action, value: numVal(f, 'value'), pos: showPos ? numVal(f, 'pos') : null, label: label !== undefined ? strVal(f, 'label') : undefined }
+        : null;
       dlg.remove();
       resolve(res);
     });
@@ -624,31 +637,74 @@ function measureDialog({ title, isHeight, value, est, showPos, pos, posEst }) {
   });
 }
 
-// Blaupause anzeigen; Maße lassen sich durch Antippen eintragen
+// Blaupause anzeigen; Maße lassen sich durch Antippen eintragen,
+// eigene Stellen durch Antippen der Form hinzufügen
 function mountBlueprint(container, p, onSaved) {
   const render = () => { container.innerHTML = blueprintSvg(p, null, true); };
-  const edit = async key => {
-    const pt = p.blueprint.points.find(x => x.key === key);
-    if (!pt) return;
-    const { values, pos } = bpData(p);
-    const est = estimate(p.blueprint, values, pos);
-    const interior = pt.t > 0 && pt.t < 1;
-    const res = await measureDialog({
-      title: pt.label, isHeight: key === 'hoehe', value: values[key], est: est.value(pt),
-      showPos: interior, pos: pos[key], posEst: est.pos(pt),
-    });
-    if (!res) return;
-    if (BP_FIELDS[key]) p.nass = { ...(p.nass || {}), [BP_FIELDS[key]]: res.value };
-    else p.blueprint.values = { ...p.blueprint.values, [key]: res.value };
-    if (interior) p.blueprint.pos = { ...p.blueprint.pos, [key]: res.pos };
+  const save = async () => {
     p.updatedAt = new Date().toISOString();
     await db.put('pieces', p);
     render();
     onSaved?.();
   };
+  const bp = () => p.blueprint;
+
+  const edit = async key => {
+    const pt = effectivePoints(bp()).find(x => x.key === key);
+    if (!pt) return;
+    const { values, pos } = bpData(p);
+    const est = estimate(bp(), values, pos);
+    const interior = pt.t > 0 && pt.t < 1;
+    const res = await measureDialog({
+      title: pt.label, isHeight: key === 'hoehe', value: values[key], est: est.value(pt),
+      showPos: interior, pos: pos[key], posEst: est.pos(pt),
+      label: key === 'hoehe' ? undefined : pt.label,
+      removeText: key === 'hoehe' ? '' : pt.custom ? 'Stelle löschen' : 'Stelle ausblenden',
+    });
+    if (!res) return;
+    if (res.action === 'remove') {
+      if (pt.custom) bp().custom = (bp().custom || []).filter(c => c.key !== key);
+      else bp().hidden = [...(bp().hidden || []), key];
+      return save();
+    }
+    if (BP_FIELDS[key]) p.nass = { ...(p.nass || {}), [BP_FIELDS[key]]: res.value };
+    else bp().values = { ...bp().values, [key]: res.value };
+    if (interior) bp().pos = { ...bp().pos, [key]: res.pos };
+    if (res.label !== undefined) bp().labels = { ...(bp().labels || {}), [key]: res.label || undefined };
+    return save();
+  };
+
+  const add = async t => {
+    const { values, pos } = bpData(p);
+    const probe = { key: '_neu', t, m: 0 };
+    const est = estimate(bp(), values, pos);
+    const r = p.blueprint.profile[Math.round(t * (p.blueprint.profile.length - 1))];
+    probe.m = 2 * r;
+    const res = await measureDialog({
+      title: 'Neue Stelle', value: null, est: est.value(probe), showPos: true, pos: null, posEst: est.pos(probe), label: 'Ø Stelle',
+    });
+    if (!res || res.action !== 'ok') return;
+    const key = `eigene-${Date.now().toString(36)}`;
+    bp().custom = [...(bp().custom || []), { key, t: Math.round(t * 1000) / 1000 }];
+    bp().labels = { ...(bp().labels || {}), [key]: res.label || 'Ø Stelle' };
+    bp().values = { ...bp().values, [key]: res.value };
+    bp().pos = { ...bp().pos, [key]: res.pos };
+    return save();
+  };
+
   container.addEventListener('click', e => {
     const g = e.target.closest('[data-bp-key]');
-    if (g) edit(g.dataset.bpKey);
+    if (g) return edit(g.dataset.bpKey);
+    const shape = e.target.closest('[data-bp-add]');
+    if (shape) {
+      const svg = shape.ownerSVGElement;
+      const pt = svg.createSVGPoint();
+      pt.x = e.clientX;
+      pt.y = e.clientY;
+      const loc = pt.matrixTransform(svg.getScreenCTM().inverse());
+      const t = (loc.y - Number(shape.dataset.top)) / Number(shape.dataset.hd);
+      add(Math.max(0.02, Math.min(0.98, t)));
+    }
   });
   container.addEventListener('keydown', e => {
     const g = e.target.closest?.('[data-bp-key]');
@@ -664,9 +720,17 @@ async function viewBlueprint(id) {
   if (!p) return notFound();
   if (!p.blueprint) return go(`#/werkstueck/${id}/umriss`, true);
   setHeader({ title: 'Blaupause', back: `#/werkstueck/${id}`, actions: `<a class="icon-btn" href="#/werkstueck/${id}/umriss">Umriss</a>` });
+  const hiddenCount = p.blueprint.hidden?.length || 0;
   $app.innerHTML = `<div class="bp-full" id="bp"></div>
-    <p class="small muted" style="text-align:center">Tippe auf ein Maß, um es einzutragen.<br>Werte mit ≈ sind aus dem Foto geschätzt.</p>`;
+    <p class="small muted" style="text-align:center">Tippe auf ein Maß, um es einzutragen oder umzubenennen.<br>
+      Tippe auf die Form, um eine weitere Stelle zu markieren.<br>Werte mit ≈ sind aus dem Foto geschätzt.</p>
+    ${hiddenCount ? `<div class="btn-row"><button class="btn small" id="unhide">Ausgeblendete Stellen zeigen (${hiddenCount})</button></div>` : ''}`;
   mountBlueprint($app.querySelector('#bp'), p);
+  $app.querySelector('#unhide')?.addEventListener('click', async () => {
+    p.blueprint.hidden = [];
+    await db.put('pieces', p);
+    router();
+  });
   // Bildschirm anlassen, solange die Blaupause an der Drehscheibe offen ist
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* nicht unterstützt */ }
 }
@@ -1485,6 +1549,7 @@ async function viewMore() {
         <li>Fotografiere dein Stück <strong>genau von der Seite</strong> vor einem ruhigen Hintergrund.</li>
         <li>Beim Speichern erkennt die App die Form und markiert Rand, Bauch, Hals, Fußansatz und Boden.</li>
         <li>Tippe ein Maß an, um es einzutragen. Schon ein Maß (z. B. die Höhe) reicht – die übrigen werden aus dem Foto geschätzt (≈).</li>
+        <li>Fehlt eine Stelle (z. B. eine Rille)? Tippe auf die Form an dieser Höhe. Stellen lassen sich auch umbenennen oder ausblenden.</li>
         <li>Vor dem Töpfern: Werkstück öffnen → „Groß anzeigen“. Der Bildschirm bleibt dabei an.</li>
       </ol>
     </div>

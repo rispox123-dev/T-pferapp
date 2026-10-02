@@ -16,7 +16,8 @@ Eine Handy-App für Töpferinnen und Töpfer, die eigene Stücke töpfern und ei
 ### Blaupause aus dem Foto
 - Beim Speichern eines Werkstücks mit Foto erkennt die App automatisch die **Form** (Henkel werden ignoriert)
 - Daraus entsteht eine Zeichnung im Stil einer Seladon-Glasur mit Craquelé: weiße Linien, Ellipsen an den wichtigen Stellen
-- Markante Stellen werden automatisch gefunden: **Öffnung, Hals/Taille, Bauch, Absatz/Fußansatz, Boden, Höhe**
+- Markante Stellen werden automatisch gefunden: **Öffnung, Hals/Taille, Bauch/Schulter, Rillen, Absatz/Fußansatz, Boden, Höhe**
+- Fehlt eine Stelle, **auf die Form tippen** und eine eigene Stelle hinzufügen; Stellen lassen sich umbenennen oder ausblenden
 - **Maß antippen** → Wert eintragen. Schon ein Maß reicht: alle anderen Maße und die Höhe der Stellen werden aus dem Foto **geschätzt (≈)**
 - „Umriss anpassen“: Rahmen enger ziehen, Empfindlichkeit einstellen oder ein anderes Foto wählen
 - „Groß anzeigen“ für die Drehscheibe – der Bildschirm bleibt dabei an

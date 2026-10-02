@@ -167,31 +167,42 @@ export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS } = {}) 
   }
   const axis = cnt ? sum / cnt : w / 2;
 
-  // Halbe Breite je Zeile (kürzere Seite), dann glätten
-  let hw = [];
-  for (let y = top; y <= bottom; y++) hw.push(Math.max(0, Math.min(axis - left[y], right[y] - axis) + 0.5));
+  // Halbe Breite je Zeile. Sind beide Seiten gleich, wird gemittelt. Sonst zählt die
+  // schmalere Seite (Henkel und Schatten machen eine Seite breiter) – außer sie hat dort
+  // eine kurze Delle, z. B. durch eine Spiegelung am Rand; dann zählt die andere Seite.
+  const A = [], B = [];
+  for (let y = top; y <= bottom; y++) {
+    A.push(Math.max(0, axis - left[y] + 0.5));
+    B.push(Math.max(0, right[y] - axis + 0.5));
+  }
+  const win = Math.max(3, Math.round(A.length * 0.08));
+  const medA = median(A, 2 * win + 1);
+  const medB = median(B, 2 * win + 1);
+  let hw = A.map((a, i) => {
+    const b = B[i];
+    const tol = Math.max(2, 0.03 * Math.max(a, b));
+    if (Math.abs(a - b) <= tol) return (a + b) / 2;
+    const aSmall = a < b;
+    const dented = aSmall ? medA[i] - a > tol : medB[i] - b > tol;
+    return aSmall !== dented ? a : b;
+  });
   hw = smooth(median(hw, 5), Math.max(1, Math.round(hw.length * 0.008)));
 
-  // Spitzen der perspektivischen Ellipsen oben und unten abschneiden
-  const maxCut = Math.round(hw.length * 0.08);
-  let cutTop = 0;
-  while (cutTop < maxCut && hw[cutTop + 2] - hw[cutTop] > 3) cutTop++;
-  let cutBot = 0;
-  while (cutBot < maxCut && hw[hw.length - 3 - cutBot] - hw[hw.length - 1 - cutBot] > 3) cutBot++;
-  hw = hw.slice(cutTop, hw.length - cutBot);
-  top += cutTop;
-  bottom -= cutBot;
-
-  // Von leicht oben fotografiert liegt die breiteste Stelle der Randellipse etwas
-  // unter der Oberkante (unten entsprechend). Die Zeichnung setzt die Ellipsen-
-  // mitte an die Kante, also wird bis dorthin abgeschnitten.
-  const ellTop = ellipseCut(hw);
-  const ellBot = ellipseCut([...hw].reverse());
-  if (ellTop + ellBot < hw.length * 0.5) {
-    hw = hw.slice(ellTop, hw.length - ellBot);
-    top += ellTop;
-    bottom -= ellBot;
-  }
+  // Perspektive ausgleichen: Von leicht oben fotografiert ist die Öffnung eine Ellipse.
+  // Ihre hintere Kante wächst oben schnell auf volle Breite – die Zeile, ab der die
+  // Breite kaum noch zunimmt, ist die Ellipsenmitte. Aus dem Verhältnis Tiefe/Breite
+  // folgt die Kameraneigung und damit, wie tief die Bodenellipse unten reicht.
+  const L = hw.length;
+  const lim = Math.round(L * 0.15);
+  let ryTop = 0;
+  while (ryTop < lim && (hw[Math.min(L - 1, ryTop + 4)] - hw[ryTop]) / 4 > 0.35) ryTop++;
+  const tilt = Math.min(0.5, ryTop / Math.max(1, hw[ryTop]));
+  let baseW = 0;
+  for (let i = L - 1 - lim; i < L; i++) baseW = Math.max(baseW, hw[i]);
+  const ryBot = Math.min(Math.round(L * 0.12), Math.round(tilt * baseW));
+  hw = hw.slice(ryTop, L - ryBot);
+  top += ryTop;
+  bottom -= ryBot;
 
   const hgt = hw.length;
   if (hgt < 20) throw new Error('Das erkannte Stück ist zu klein. Ziehe den Rahmen enger.');
@@ -219,18 +230,6 @@ export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS } = {}) 
     profile,
     outline: { left: outlineL, right: outlineR, axis: (axis + x0) / IW, top: (top + y0) / IH, bottom: (bottom + y0) / IH },
   };
-}
-
-// Wie viele Zeilen vom Anfang gehören zur Ellipsen-Rundung? (wächst schnell, dann langsamer)
-function ellipseCut(arr) {
-  const lim = Math.round(arr.length * 0.12);
-  let j = 0;
-  for (let i = 1; i <= lim; i++) if (arr[i] > arr[j]) j = i;
-  if (j < 2 || arr[j] < arr[0] * 1.01 || j > 0.35 * arr[j]) return 0;
-  const h = Math.floor(j / 2);
-  const s1 = (arr[h] - arr[0]) / h;
-  const s2 = (arr[j] - arr[h]) / (j - h);
-  return s1 >= s2 ? j : 0;
 }
 
 function otsu(values, max) {

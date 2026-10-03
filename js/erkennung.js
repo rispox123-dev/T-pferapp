@@ -165,14 +165,14 @@ function kosten(model, Lp, a, b, cLo, cHi) {
 }
 
 // Wahrscheinlichkeit „Stück“ (−1 … +1) je Pixel
-function stueckKarte(lab, fg, bg, w, h, bias) {
+function stueckKarte(lab, fg, bg, w, h, bias, fgLo = 0.5) {
   const n = w * h;
   const q = new Float32Array(n);
   const { L, A, B } = lab;
   for (let k = 0; k < n; k++) {
     const Lp = L[k] + 16;
     const cb = kosten(bg, Lp, A[k], B[k], 0.42, 1.08);
-    const cf = kosten(fg, Lp, A[k], B[k], 0.5, 1.35);
+    const cf = kosten(fg, Lp, A[k], B[k], fgLo, 1.35);
     // passt zu keinem Modell (z. B. Glanzlicht): unsicher statt Hintergrund
     q[k] = Math.tanh((cb - cf + bias) / 6) * (cb > 10 && cf > 10 ? 0.3 : 1);
   }
@@ -289,6 +289,8 @@ function achseSuchen(T, w, h, mitte, streuung) {
 // wenn die andere im Schatten liegt (die gut belichtete Seite als Vorlage).
 // ---------------------------------------------------------------------------
 
+const FARBE = !(typeof process !== 'undefined' && process.env?.OHNE_FARBE);
+const BODEN_ELLIPSE = !(typeof process !== 'undefined' && process.env?.OHNE_BODEN);
 const ALPHA_S = 6; // Gewicht der Kanten
 const RHO = 0.8; // Gewicht der Farbfläche (zweiter Durchgang)
 const C_ON = 8, C_OFF = 8;
@@ -333,6 +335,28 @@ function symKontur(ctx, { erwartung = null, mitFarbe = false, schwelle = 1 } = {
     }
     return n > 0 && (ALPHA_S * sum) / n > c0 * 1.3;
   };
+  // Schaut die Kamera (laut Lagesensor) von oben, ist der Boden eine sichtbare Ellipse: Die
+  // Kontur läuft unten spitz zu und endet nicht breit – außer die Ellipse wäre dort sehr flach.
+  const geo = ctx.geo;
+  const bodenRund = (y, u) => {
+    if (!geo?.bekannt || !BODEN_ELLIPSE) return false;
+    const blick = geo.e + Math.atan((y - geo.cy) / geo.f);
+    return u * Math.sin(Math.max(0, blick)) > 5;
+  };
+  // Hat die Mitte der nächsten Zeilen (Richtung dir) noch die Farbe des Stücks? Dann geht der
+  // Körper dort weiter – eine waagrechte Linie (Tischkante, Glasurgrenze, Schattenrand) ist
+  // dann nicht sein Ende.
+  const stueckWeiter = (y0, u, dir) => {
+    if (!mitFarbe || !q || !FARBE) return false;
+    let sum = 0, n = 0;
+    for (let k = 1; k <= 4; k++) {
+      const y = y0 + dir * k;
+      if (y < 0 || y >= h) break;
+      const r = Math.max(2, 0.4 * u);
+      for (let x = Math.round(ax[y] - r); x <= Math.round(ax[y] + r); x += 2) if (x >= 0 && x < w) { sum += q[y * w + x]; n++; }
+    }
+    return n > 0 && sum / n > 0.15;
+  };
 
   for (let y = 0; y < h; y++) {
     const a = ax[y];
@@ -365,7 +389,7 @@ function symKontur(ctx, { erwartung = null, mitFarbe = false, schwelle = 1 } = {
     for (let u = 0; u <= U; u++) {
       // breit enden nur, wenn die Seitenkanten darunter wirklich aufhören (sonst ist es z. B.
       // eine Glasurgrenze)
-      const bonus = u <= uRand ? 0 : kappeVor[u] > capRausch + 0.08 && !seitenLaufenWeiter(y, u, 1) ? ALPHA_S * 2 * (kappeVor[u] - capRausch) : NEG;
+      const bonus = u <= uRand ? 0 : kappeVor[u] > capRausch + 0.08 && !seitenLaufenWeiter(y, u, 1) && !stueckWeiter(y - 1, u, 1) && !bodenRund(y - 1, u) ? ALPHA_S * 2 * (kappeVor[u] - capRausch) : NEG;
       if (prev[u] + bonus > bestPrev) { bestPrev = prev[u] + bonus; bestPrevU = u; }
     }
     if (bestPrev - C_OFF > post) { post = bestPrev - C_OFF; postFrom[y] = bestPrevU; } else postFrom[y] = -1;
@@ -386,7 +410,7 @@ function symKontur(ctx, { erwartung = null, mitFarbe = false, schwelle = 1 } = {
       // Eintritt nur schmal (Spitze der Öffnungsellipse) oder ganz oben am Bildrand
       let eintritt = NEG;
       if (u <= uRand || y === 0) eintritt = -C_ON + ALPHA_S * symKante(lxx[u], lxy[u], lyy[u], rxx[u], rxy[u], ryy[u], 0, 1);
-      else if (kappe[u] > capRausch + 0.08 && !seitenLaufenWeiter(y - 1, u, -1)) eintritt = -C_ON + ALPHA_S * 2 * (kappe[u] - capRausch);
+      else if (kappe[u] > capRausch + 0.08 && !seitenLaufenWeiter(y - 1, u, -1) && !stueckWeiter(y, u, -1)) eintritt = -C_ON + ALPHA_S * 2 * (kappe[u] - capRausch);
       let best = eintritt, arg = -1;
       const kante = dw => ALPHA_S * symKante(lxx[u], lxy[u], lyy[u], rxx[u], rxy[u], ryy[u], dw, 1 / (1 + dw * dw));
       // kleine Schritte genau
@@ -631,6 +655,11 @@ export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS, brush =
   const q = stueckKarte(lab, fg, bg, w, h, bias);
   pinsel(q, brush, w, h, IW, IH, x0, y0);
   ctx.q = q;
+  // für den Rand: Die Farbe des Stücks darf dort deutlich dunkler sein (Rundung, Unschärfe)
+  if (FARBE) {
+    ctx.qRand = stueckKarte(lab, fg, bg, w, h, bias, 0.28);
+    pinsel(ctx.qRand, brush, w, h, IW, IH, x0, y0);
+  }
 
   // 4. Messen, Perspektive, Formwissen; dann mit Farbe und Erwartung ein zweites Mal suchen
   // mit Farbe ohne Vorgabe neu suchen, damit ein zu weiter erster Umriss nicht weiterwirkt
@@ -690,18 +719,90 @@ function farbmodelleAus(lab, us, achse, w, h, band) {
   return { fg, bg };
 }
 
+// Farbgrenze einer Zeile: Von innen nach außen gehört alles zum Körper, solange die Pixel
+// die Farbe des Stücks haben. Zum Rand hin verblasst die Farbe (Tiefenunschärfe, Mischpixel) –
+// das zählt noch zum Körper, bis die Pixel eher wie der Hintergrund aussehen. Erst wo sie
+// dauerhaft die Farbe des Hintergrunds haben, ist der Körper zu Ende.
+// Ergebnis je Seite: Abstand zur Achse (Pixel, mit Zwischenwert) und Sicherheit 0 … 1.
+function farbGrenze(ctx, y, a, u0) {
+  const { w, h, qRand: q } = ctx;
+  const qq = x => {
+    const xi = Math.round(x);
+    if (xi < 0 || xi >= w) return -0.5;
+    let s = 0, n = 0;
+    for (let yy = Math.max(0, y - 1); yy <= Math.min(h - 1, y + 1); yy++) { s += q[yy * w + xi]; n++; }
+    return s / n;
+  };
+  const out = [];
+  for (const side of [-1, 1]) {
+    const d0 = Math.max(2, Math.round(0.5 * u0)), d1 = Math.round(1.5 * u0 + 12);
+    let res = { u: -1, c: 0 };
+    let innen = 0, nInnen = 0;
+    for (let d = d0; d <= d1; d++) {
+      const v = qq(a + side * d);
+      if (v > 0.2) { innen += v; nInnen++; }
+      // dauerhaft Hintergrund: diese und die zwei folgenden Stellen
+      if (v < -0.15 && qq(a + side * (d + 1)) < -0.25 && qq(a + side * (d + 2)) < -0.25) {
+        if (nInnen < 3) break; // kein Körper davor: nichts sagen
+        // Übergang auf den Mittelwert zwischen Körper- und Hintergrundton legen
+        const vi = innen / nInnen;
+        let aussen = 0;
+        for (let e = 1; e <= 4; e++) aussen += qq(a + side * (d + e));
+        aussen /= 4;
+        const mitte = (vi + aussen) / 2;
+        let x = d;
+        for (let e = d; e > d0; e--) {
+          const v1 = qq(a + side * (e - 1)), v2 = qq(a + side * e);
+          if (v1 >= mitte && v2 < mitte) { x = e - 1 + (v1 - mitte) / ((v1 - v2) || 1); break; }
+        }
+        res = { u: x, c: clamp((vi - aussen) / 1.4, 0, 1) };
+        break;
+      }
+    }
+    out.push(res);
+  }
+  return { L: out[0], R: out[1] };
+}
+
 // Gefundene Kontur auswerten: Sicherheit je Seite, Leitseite, dann Profil
 function messen(ctx, pfad, hint) {
   const { h, w, q, achse } = ctx;
   const m = seitenMessen(ctx, pfad.u);
   const hw = new Float32Array(h).fill(-1), wt = new Float32Array(h);
   const rL = new Float32Array(h).fill(-1), rR = new Float32Array(h).fill(-1);
+  const farbDelta = new Float32Array(h);
   let top = -1, bottom = -1, sL = 0, sR = 0, nb = 0;
   for (let y = 0; y < h; y++) {
     const u = pfad.u[y];
     if (u < 0) continue;
     const a = achse(y);
     hw[y] = u + 0.5;
+    if (ctx.qRand) {
+      // Farbabgleich: wo Stück und Hintergrund sich klar unterscheiden, entscheidet die Farbe
+      const g = farbGrenze(ctx, y, a, u);
+      const ok = s => s.u > 1 && s.c > 0.55;
+      let uc = -1, cc = 0;
+      if (ok(g.L) && ok(g.R)) {
+        // beide Seiten: gleich weit → Mittel; sonst hängt an einer Seite etwas (Henkel) → die engere
+        uc = Math.abs(g.L.u - g.R.u) < 0.08 * u + 2 ? (g.L.u + g.R.u) / 2 : Math.min(g.L.u, g.R.u);
+        cc = Math.min(g.L.c, g.R.c);
+      } else if (ok(g.L) || ok(g.R)) {
+        const s1 = ok(g.L) ? g.L : g.R;
+        if (s1.u < u + 0.5) { uc = s1.u; cc = s1.c * 0.8; }
+      }
+      // nur verschieben, wenn der Streifen dazwischen eindeutig ist: beim Verengen klar
+      // Hintergrund, beim Erweitern klar Stück (Glanzlichter und dunkel auf dunkel zählen nicht)
+      if (uc > 1 && Math.abs(uc - hw[y]) > 1) {
+        let sum = 0, n = 0;
+        const lo = Math.min(uc, hw[y]) + 0.5, hi = Math.max(uc, hw[y]) - 0.5;
+        for (const side of [-1, 1]) for (let d = lo; d <= hi; d += 1) {
+          const x = Math.round(a + side * d);
+          if (x >= 0 && x < w) { sum += ctx.qRand[y * w + x]; n++; }
+        }
+        const band = n ? sum / n : 0;
+        if (uc < hw[y] ? band < -0.45 : band > 0.45) farbDelta[y] = (uc - hw[y]) * clamp(cc, 0, 1);
+      }
+    }
     let c = 0.6 * Math.max(m.cL[y], m.cR[y]) + 0.4 * Math.min(m.cL[y], m.cR[y]);
     if (q) {
       // Farbe innen wie Stück, außen wie Hintergrund?
@@ -720,6 +821,50 @@ function messen(ctx, pfad, hint) {
     sL += m.cL[y]; sR += m.cR[y]; nb++;
   }
   if (nb < 20 || bottom - top < 24) return null;
+  if (ctx.qRand) {
+    // Ende des Körpers oben und unten: Eine Zeile gehört nur dann dazu, wenn ihre Mitte die
+    // Farbe des Stücks hat. Hat sie die Farbe des Hintergrunds (auch im Schatten), ist der
+    // Körper dort schon zu Ende. Hat eine Zeile außerhalb noch die Farbe des Stücks und eine
+    // klare Farbgrenze, gehört sie noch dazu (z. B. ein ausgestellter Rand).
+    const mitteQ = (y, u, karte) => {
+      const a = achse(y), r = Math.max(2, 0.35 * u);
+      let sum = 0, n = 0;
+      for (let x = Math.round(a - r); x <= Math.round(a + r); x++) if (x >= 0 && x < w) { sum += karte[y * w + x]; n++; }
+      return n ? sum / n : 0;
+    };
+    const H0 = bottom - top;
+    const maxSchnitt = Math.round(0.2 * H0);
+    let cut = 0;
+    while (cut < maxSchnitt && bottom - top > 24 && mitteQ(bottom, hw[bottom], q) < -0.4 && mitteQ(bottom, hw[bottom], ctx.qRand) < -0.3) { hw[bottom] = -1; bottom--; cut++; }
+    cut = 0;
+    while (cut < maxSchnitt && bottom - top > 24 && mitteQ(top, hw[top], q) < -0.4 && mitteQ(top, hw[top], ctx.qRand) < -0.3) { hw[top] = -1; top++; cut++; }
+    const maxDazu = Math.round(0.12 * H0);
+    for (const dir of [-1, 1]) {
+      let y = dir < 0 ? top : bottom;
+      for (let k = 0; k < maxDazu; k++) {
+        const yn = y + dir;
+        if (yn < 0 || yn >= h) break;
+        const u = hw[y];
+        if (mitteQ(yn, u, ctx.qRand) < 0.5 || mitteQ(yn, u, q) < 0.35) break;
+        const g = farbGrenze(ctx, yn, achse(yn), u);
+        if (!(g.L.u > 1 && g.R.u > 1 && g.L.c > 0.6 && g.R.c > 0.6)) break;
+        if (Math.abs(g.L.u - g.R.u) > 0.1 * u + 3) break;
+        hw[yn] = (g.L.u + g.R.u) / 2;
+        wt[yn] = Math.min(g.L.c, g.R.c) * 0.7;
+        y = yn;
+      }
+      if (dir < 0) top = y; else bottom = y;
+    }
+    // Farbkorrektur nur, wo mehrere Zeilen in Folge übereinstimmen (Median über ±4 Zeilen);
+    // einzelne Kerben durch Sprenkel oder Glanz fallen so weg
+    const r = 4;
+    for (let y = top; y <= bottom; y++) {
+      const nb2 = [];
+      for (let yy = Math.max(top, y - r); yy <= Math.min(bottom, y + r); yy++) nb2.push(farbDelta[yy]);
+      const md = median(nb2);
+      if (Math.abs(md) > 1 && hw[y] > 0) hw[y] = Math.max(1, hw[y] + md);
+    }
+  }
   return profilBerechnen(ctx, achse, hw, wt, top, bottom, hint, { rL, rR, cL: m.cL, cR: m.cR, leit: sL >= sR ? -1 : 1, qL: sL / nb, qR: sR / nb });
 }
 

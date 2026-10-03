@@ -367,6 +367,13 @@ function shrink(nass, fertig) {
 async function viewPiece(id) {
   const p = await db.get('pieces', id);
   if (!p) return notFound();
+  // Ältere Blaupausen (ohne Ausschnitt aus dem Foto) einmalig neu berechnen
+  if (p.blueprint && !p.blueprint.silhouette && p.photos?.includes(p.blueprint.photoId)) {
+    try {
+      p.blueprint = await createBlueprint(p.blueprint.photoId, p.blueprint);
+      await db.put('pieces', p);
+    } catch (err) { console.warn('Blaupause:', err.message); }
+  }
   setHeader({ title: p.name || 'Werkstück', back: '#/werkstuecke', actions: `<a class="icon-btn" href="#/werkstueck/${id}/bearbeiten">Bearbeiten</a>` });
 
   const firings = (await db.getAll('firings')).filter(f => f.pieceId === id).sort(byDateDesc);
@@ -586,7 +593,7 @@ function bpInfo(p) {
 // preview: frisches Analyse-Ergebnis (im Umriss-Editor), sonst die gespeicherte Blaupause
 function blueprintSvg(p, preview, interactive) {
   const bp = preview
-    ? { ...(p.blueprint || {}), profile: preview.profile, points: findPoints(preview.profile), attachments: preview.attachments }
+    ? { ...(p.blueprint || {}), profile: preview.profile, points: findPoints(preview.profile), silhouette: preview.silhouette, tilt: preview.tilt, attachments: [] }
     : p.blueprint;
   return renderBlueprint(bp, { ...bpData(p), title: p.name, info: bpInfo(p), interactive, seed: hashSeed(p.id || p.name) });
 }
@@ -595,7 +602,8 @@ function makeBlueprint(photoId, crop, sens, result, prev, brush = []) {
   return {
     photoId, crop, sens, brush,
     profile: result.profile,
-    attachments: result.attachments || [],
+    silhouette: result.silhouette,
+    tilt: result.tilt,
     points: findPoints(result.profile),
     values: prev?.values || {},
     pos: prev?.pos || {},
@@ -605,12 +613,17 @@ function makeBlueprint(photoId, crop, sens, result, prev, brush = []) {
   };
 }
 
+// Neu berechnen; bei derselben Aufnahme bleiben Rahmen, Empfindlichkeit und Korrekturen erhalten
 async function createBlueprint(photoId, prev) {
   const photo = await db.get('photos', photoId);
   if (!photo) throw new Error('Foto nicht gefunden');
   const src = await loadForAnalysis(photo.blob);
-  const result = analyze(src, { crop: DEFAULT_CROP, sens: DEFAULT_SENS });
-  return makeBlueprint(photoId, { ...DEFAULT_CROP }, DEFAULT_SENS, result, prev);
+  const same = prev?.photoId === photoId;
+  const crop = same && prev.crop ? prev.crop : { ...DEFAULT_CROP };
+  const sens = same ? prev.sens ?? DEFAULT_SENS : DEFAULT_SENS;
+  const brush = same ? prev.brush || [] : [];
+  const result = analyze(src, { crop, sens, brush });
+  return makeBlueprint(photoId, crop, sens, result, prev, brush);
 }
 
 function measureDialog({ title, isHeight, value, est, showPos, pos, posEst, label, removeText }) {
@@ -762,12 +775,12 @@ async function viewBlueprintEditor(id) {
   };
 
   $app.innerHTML = `
-    <div class="info-box"><p>Am besten klappt es mit einem Foto <strong>genau von der Seite</strong> vor einem ruhigen Hintergrund. Ziehe die Ränder des Rahmens eng um dein Stück (ohne Schatten).</p></div>
+    <div class="info-box"><p>Die App schneidet dein Stück aus dem Foto aus (orange) und zeichnet genau diesen Ausschnitt als Blaupause. Fehlt etwas, male es mit <strong>Hinzufügen</strong> dazu; Schatten o. Ä. nimmst du mit <strong>Entfernen</strong> weg.</p></div>
     ${p.photos.length > 1 ? `<div class="bp-choice">${p.photos.map(ph => `<button type="button" data-photo-id="${ph}" class="${ph === st.photoId ? 'active' : ''}" aria-label="Dieses Foto verwenden">${thumb(ph)}</button>`).join('')}</div>` : ''}
     <div class="segmented" id="bp-mode" role="radiogroup" aria-label="Werkzeug">
       <label><input type="radio" name="bpmode" value="rahmen" checked><span class="none">Rahmen</span></label>
-      <label><input type="radio" name="bpmode" value="pinsel"><span class="none">Henkel markieren</span></label>
-      <label><input type="radio" name="bpmode" value="radierer"><span class="none">Radierer</span></label>
+      <label><input type="radio" name="bpmode" value="pinsel"><span class="none">Hinzufügen</span></label>
+      <label><input type="radio" name="bpmode" value="radierer"><span class="none">Entfernen</span></label>
     </div>
     <div class="bp-editor"><canvas></canvas></div>
     <div id="brush-tools" hidden>
@@ -833,9 +846,10 @@ async function viewBlueprintEditor(id) {
       ctx.strokeStyle = '#ff7a3d';
       ctx.lineWidth = 3;
       ctx.lineJoin = 'round';
-      for (const side of [o.left, o.right]) {
+      for (const line of o.silhouette || []) {
         ctx.beginPath();
-        side.forEach(([x, y], i) => (i ? ctx.lineTo(x * w, y * h) : ctx.moveTo(x * w, y * h)));
+        line.forEach(([x, y], i) => (i ? ctx.lineTo(x * w, y * h) : ctx.moveTo(x * w, y * h)));
+        ctx.closePath();
         ctx.stroke();
       }
       ctx.setLineDash([6, 6]);
@@ -853,8 +867,8 @@ async function viewBlueprintEditor(id) {
       brushCtx.lineCap = 'round';
       brushCtx.lineJoin = 'round';
       for (const b of st.brush) {
-        brushCtx.globalCompositeOperation = b.erase ? 'destination-out' : 'source-over';
-        brushCtx.strokeStyle = brushCtx.fillStyle = '#ff9a4d';
+        brushCtx.globalCompositeOperation = 'source-over';
+        brushCtx.strokeStyle = brushCtx.fillStyle = b.erase ? '#3aa0ff' : '#ff9a4d';
         brushCtx.lineWidth = 2 * b.r * w;
         brushCtx.beginPath();
         b.pts.forEach(([x, y], i) => (i ? brushCtx.lineTo(x * w, y * h) : brushCtx.moveTo(x * w, y * h)));
@@ -865,16 +879,6 @@ async function viewBlueprintEditor(id) {
       ctx.globalAlpha = 0.4;
       ctx.drawImage(brushLayer, 0, 0, w, h);
       ctx.globalAlpha = 1;
-    }
-    if (o?.attachments?.length) {
-      ctx.strokeStyle = '#2fe0ff';
-      ctx.lineWidth = 3;
-      for (const line of o.attachments) {
-        ctx.beginPath();
-        line.forEach(([x, y], i) => (i ? ctx.lineTo(x * w, y * h) : ctx.moveTo(x * w, y * h)));
-        ctx.closePath();
-        ctx.stroke();
-      }
     }
     if (st.mode !== 'rahmen') return;
     for (const [x, y] of [[(c.x0 + c.x1) / 2, c.y0], [(c.x0 + c.x1) / 2, c.y1], [c.x0, (c.y0 + c.y1) / 2], [c.x1, (c.y0 + c.y1) / 2]]) {
@@ -897,14 +901,12 @@ async function viewBlueprintEditor(id) {
       error = err.message;
     }
     draw();
-    const marked = st.brush.some(b => !b.erase);
-    const found = st.result?.attachments.length || 0;
     statusEl.textContent = error
       || (st.mode === 'rahmen'
-        ? 'Orange = erkannter Umriss. Passt er nicht, verschiebe den Rahmen oder die Empfindlichkeit. Fehlt der Henkel, wähle „Henkel markieren“.'
-        : marked
-          ? (found ? `Türkis = erkannter Anbau (${found}). Zu viel erkannt? Mit dem Radierer wegnehmen.` : 'In der Markierung wurde nichts gefunden – male direkt über den Henkel.')
-          : 'Male mit dem Finger über den Henkel (oder Ausguss, Knauf …). Grob reicht – die genaue Form sucht die App selbst.');
+        ? 'Orange = ausgeschnittenes Stück. Passt es nicht, verschiebe den Rahmen oder die Empfindlichkeit – oder korrigiere mit „Hinzufügen“ / „Entfernen“.'
+        : st.mode === 'pinsel'
+          ? 'Male mit dem Finger über Teile, die fehlen (z. B. Henkel). Die App übernimmt dort, was sich vom Hintergrund abhebt.'
+          : 'Male über Teile, die nicht zum Stück gehören (z. B. Schatten).');
     statusEl.style.color = error ? 'var(--bad)' : '';
     previewEl.innerHTML = st.result ? blueprintSvg(p, st.result, false) : '';
     applyBtn.disabled = !st.result;
@@ -1641,10 +1643,10 @@ async function viewMore() {
       <h2>So funktioniert die Blaupause</h2>
       <ol class="small" style="padding-left:20px;margin:0">
         <li>Fotografiere dein Stück <strong>genau von der Seite</strong> vor einem ruhigen Hintergrund.</li>
-        <li>Beim Speichern erkennt die App die Form und markiert Rand, Bauch, Hals, Fußansatz und Boden.</li>
+        <li>Beim Speichern schneidet die App das Stück aus dem Foto aus, zeichnet es nach und markiert Rand, Bauch, Hals, Fußansatz und Boden.</li>
         <li>Tippe ein Maß an, um es einzutragen. Schon ein Maß (z. B. die Höhe) reicht – die übrigen werden aus dem Foto geschätzt (≈).</li>
         <li>Fehlt eine Stelle (z. B. eine Rille)? Tippe auf die Form an dieser Höhe. Stellen lassen sich auch umbenennen oder ausblenden.</li>
-        <li>Henkel, Ausguss oder Knauf: „Umriss anpassen“ → „Henkel markieren“ und mit dem Finger grob darüber wischen.</li>
+        <li>Stimmt der Ausschnitt nicht (z. B. Schatten dabei, Teil fehlt)? „Umriss anpassen“ → mit „Hinzufügen“ oder „Entfernen“ darübermalen.</li>
         <li>Vor dem Töpfern: Werkstück öffnen → „Groß anzeigen“. Der Bildschirm bleibt dabei an.</li>
       </ol>
     </div>

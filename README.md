@@ -14,13 +14,14 @@ Eine Handy-App für Töpferinnen und Töpfer, die eigene Stücke töpfern und ei
 - **„Nochmal töpfern“**: übernimmt Ton, Maße und Blaupause als Vorlage für ein neues Stück
 
 ### Blaupause aus dem Foto
-- Beim Speichern eines Werkstücks mit Foto erkennt die App automatisch die **Form** des gedrehten Körpers (Henkel stören dabei nicht)
-- Daraus entsteht eine Zeichnung im Stil einer Seladon-Glasur mit Craquelé: weiße Linien, Ellipsen an den wichtigen Stellen
+- Beim Speichern eines Werkstücks mit Foto **schneidet die App das Stück aus dem Foto aus** – mit Henkel, genau in Lage und Perspektive wie fotografiert
+- Dieser Ausschnitt wird als Zeichnung im Stil einer Seladon-Glasur mit Craquelé nachgezogen: weiße Außenkontur, sichtbare Linien im Stück (Öffnung, Kanten, Fußkante) und Ellipsen an den Messstellen
 - Markante Stellen werden automatisch gefunden: **Öffnung, Hals/Taille, Bauch/Schulter, Rillen, Absatz/Fußansatz, Boden, Höhe**
 - Fehlt eine Stelle, **auf die Form tippen** und eine eigene Stelle hinzufügen; Stellen lassen sich umbenennen oder ausblenden
 - **Maß antippen** → Wert eintragen. Schon ein Maß reicht: alle anderen Maße und die Höhe der Stellen werden aus dem Foto **geschätzt (≈)**
 - „Umriss anpassen“: Rahmen enger ziehen, Empfindlichkeit einstellen oder ein anderes Foto wählen
-- **Henkel markieren**: im Umriss-Editor mit dem Finger grob über Henkel, Ausguss oder Knauf wischen – die App sucht im Originalfoto in voller Auflösung die genaue Form, glättet sie und zeichnet sie mit ein, samt Ansatzhöhen und wie weit der Henkel absteht (Radierer und Rückgängig zum Korrigieren)
+- **Hinzufügen / Entfernen**: im Umriss-Editor den Ausschnitt mit dem Finger korrigieren (fehlende Teile dazumalen, Schatten wegnehmen)
+- Henkel werden automatisch erkannt und vermessen: Höhe, wie weit er absteht, Ansatzhöhen
 - „Groß anzeigen“ für die Drehscheibe – der Bildschirm bleibt dabei an
 - Tipp: Foto **genau von der Seite**, vor einem ruhigen, einfarbigen Hintergrund
 

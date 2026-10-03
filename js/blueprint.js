@@ -254,167 +254,278 @@ export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS, brush =
     outlineR.push(toRel(axis + r, y));
   }
 
-  // Mit dem Finger markierte Anbauten (Henkel, Ausguss …) in voller Auflösung analysieren
-  const attach = brush.some(b => !b.erase)
-    ? analyzeAttachments(src, { strokes: brush, samples, T, axis: axis + x0, top: top + y0, hw, hgt, rimRows: ryTop + 2, baseRows: ryBot + 2 })
-    : { attachments: [], outline: [] };
+  // Ausschnitt: tatsächliche Silhouette aus dem Foto (mit Henkel, so wie fotografiert)
+  const sil = buildSilhouette({ comp, bestId, dist, T, w, h, axis, top, hw, ryTop, ryBot, brush, IW, IH, x0, y0, hgt });
+  // Sichtbare Linien im Stück (Öffnung, Rillen, Fußkante …)
+  const inner = detectInnerLines({ Y, U, V, w, h, mask: sil.mask, axis, top, hgt, rmax: Math.max(...hw), rimZone: tilt * hw[0] * 1.6 + 0.02 * hgt });
 
   return {
     profile,
-    attachments: attach.attachments,
+    tilt: Math.round(tilt * 1000) / 1000,
+    silhouette: { outlines: sil.outlines, inner },
     outline: {
       left: outlineL, right: outlineR, axis: (axis + x0) / IW, top: (top + y0) / IH, bottom: (bottom + y0) / IH,
-      attachments: attach.outline,
+      silhouette: sil.outlineRel,
     },
   };
 }
 
 // ---------------------------------------------------------------------------
-// Anbauten: markierter Bereich wird aus dem Originalfoto in hoher Auflösung
-// ausgeschnitten, mit eigener Schwelle vom Hintergrund getrennt, bereinigt
-// und als glatte Kontur nachgezogen.
+// Ausschnitt (Silhouette)
 // ---------------------------------------------------------------------------
 
-const ATTACH_SIZE = 560;
-
-function analyzeAttachments(src, { strokes, samples, T, axis, top, hw, hgt, rimRows, baseRows }) {
-  const IW = src.width, IH = src.height;
-  const NW = src.img.naturalWidth, NH = src.img.naturalHeight;
-
-  // Begrenzungsrahmen der Markierung (relativ zum Bild)
-  let bx0 = 1, by0 = 1, bx1 = 0, by1 = 0;
-  for (const st of strokes) {
-    if (st.erase) continue;
-    const ry = (st.r * NW) / NH;
-    for (const [x, y] of st.pts) {
-      bx0 = Math.min(bx0, x - st.r); bx1 = Math.max(bx1, x + st.r);
-      by0 = Math.min(by0, y - ry); by1 = Math.max(by1, y + ry);
+function buildSilhouette({ comp, bestId, dist, T, w, h, axis, top, hw, ryTop, ryBot, brush, IW, IH, x0, y0, hgt }) {
+  const n = w * h;
+  const L = hw.length;
+  const r0 = hw[0], rN = hw[L - 1];
+  // Halbe Breite des gedrehten Körpers in Zeile y (inkl. Rand- und Bodenellipse)
+  const bodyHalf = y => {
+    const row = y - top;
+    if (row < 0) {
+      if (ryTop <= 0 || row < -ryTop) return -1;
+      return r0 * Math.sqrt(Math.max(0, 1 - (row / ryTop) ** 2));
     }
-  }
-  if (bx1 - bx0 < 0.005 || by1 - by0 < 0.005) return { attachments: [], outline: [] };
-  // Umgebung mit einbeziehen: die Markierung muss den Anbau nur berühren
-  const ex = (bx1 - bx0) * 0.4, ey = (by1 - by0) * 0.4;
-  bx0 = clamp(bx0 - ex, 0, 1); by0 = clamp(by0 - ey, 0, 1); bx1 = clamp(bx1 + ex, 0, 1); by1 = clamp(by1 + ey, 0, 1);
-
-  // Ausschnitt in hoher Auflösung
-  const sw = (bx1 - bx0) * NW, sh = (by1 - by0) * NH;
-  const scale = Math.min(1, ATTACH_SIZE / Math.max(sw, sh));
-  const W = Math.max(8, Math.round(sw * scale)), H = Math.max(8, Math.round(sh * scale));
-  const canvas = document.createElement('canvas');
-  canvas.width = W; canvas.height = H;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(src.img, bx0 * NW, by0 * NH, sw, sh, 0, 0, W, H);
-  const data = ctx.getImageData(0, 0, W, H).data;
-
-  // Markierung rastern (Radierer-Striche nehmen wieder weg)
-  ctx.clearRect(0, 0, W, H);
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  for (const st of strokes) {
-    ctx.globalCompositeOperation = st.erase ? 'destination-out' : 'source-over';
-    ctx.strokeStyle = '#000';
-    ctx.fillStyle = '#000';
-    ctx.lineWidth = 2 * st.r * NW * scale;
-    const px = ([x, y]) => [(x - bx0) * NW * scale, (y - by0) * NH * scale];
-    ctx.beginPath();
-    st.pts.forEach((q, i) => { const [x, y] = px(q); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-    if (st.pts.length === 1) { const [x, y] = px(st.pts[0]); ctx.arc(x, y, st.r * NW * scale, 0, Math.PI * 2); ctx.fill(); }
-    else ctx.stroke();
-  }
-  ctx.globalCompositeOperation = 'source-over';
-  const mdata = ctx.getImageData(0, 0, W, H).data;
-
-  // Umrechnung Ausschnitt-Pixel -> Analyse-Pixel
-  const toA = (X, Y) => [(bx0 * NW + X / scale) * (IW / NW), (by0 * NH + Y / scale) * (IH / NH)];
-  const margin = 1.5 + 0.01 * hgt;
-  const insideBody = (X, Y) => {
-    const [ax, ay] = toA(X, Y);
-    const row = Math.round(ay - top);
-    if (row < -rimRows || row >= hw.length + baseRows) return false;
-    const r = hw[clamp(row, 0, hw.length - 1)];
-    return Math.abs(ax - axis) <= r + margin;
+    if (row >= L) {
+      const d = row - (L - 1);
+      if (ryBot <= 0 || d > ryBot) return -1;
+      return rN * Math.sqrt(Math.max(0, 1 - (d / ryBot) ** 2));
+    }
+    return hw[row];
   };
+  const margin = 1.5 + 0.006 * hgt;
 
-  // Farbabstand zum Hintergrund und eigene Schwelle im markierten Bereich
-  const N = W * H;
-  const mask = new Uint8Array(N);
-  const dist = new Float32Array(N);
-  const regionVals = [];
-  let dMax = 0;
-  for (let k = 0; k < N; k++) {
-    const i = k * 4;
-    const r = data[i], g = data[i + 1], b = data[i + 2];
-    const l = 0.299 * r + 0.587 * g + 0.114 * b;
-    const Yv = l * 0.6, Uv = b - l, Vv = r - l;
-    let best = Infinity;
-    for (const s of samples) {
-      const d = (Yv - s[0]) ** 2 + (Uv - s[1]) ** 2 + (Vv - s[2]) ** 2;
-      if (d < best) best = d;
-    }
-    dist[k] = Math.sqrt(best);
-    if (mdata[i + 3] > 0) {
-      mask[k] = 1;
-      regionVals.push(dist[k]);
-      if (dist[k] > dMax) dMax = dist[k];
+  let M = new Uint8Array(n);
+  let area = 0;
+  for (let k = 0; k < n; k++) if (comp[k] === bestId) { M[k] = 1; area++; }
+
+  for (let y = 0; y < h; y++) {
+    const r = bodyHalf(y);
+    const nearBase = y - top > L * 0.92;
+    for (let x = 0; x < w; x++) {
+      const k = y * w + x;
+      const off = Math.abs(x - axis) - r;
+      if (r >= 0 && off <= 0) M[k] = 1; // Dellen durch Spiegelungen im Körper füllen
+      else if (M[k] && (r < 0 || nearBase) && off > margin) M[k] = 0; // Schatten am Fuß / über dem Rand
     }
   }
-  const Tloc = clamp(regionVals.length > 50 ? otsu(regionVals, dMax) : T, T * 0.6, T * 1.6);
 
-  let A = new Uint8Array(N);
-  for (let k = 0; k < N; k++) {
-    if (dist[k] >= Tloc && !insideBody(k % W, Math.floor(k / W))) A[k] = 1;
+  // Löcher außerhalb des Körpers (z. B. im Henkel): hintergrundfarbene Flächen ausschneiden
+  const holeCand = new Uint8Array(n);
+  for (let y = 0; y < h; y++) {
+    const r = bodyHalf(y);
+    for (let x = 0; x < w; x++) {
+      const k = y * w + x;
+      if (M[k] && dist[k] < T && (r < 0 || Math.abs(x - axis) - r > margin)) holeCand[k] = 1;
+    }
   }
-
-  // Bereinigen: Krümel weg (Öffnen), kleine Lücken zu (Schließen)
-  const rad = Math.max(1, Math.round(Math.max(W, H) / 280));
-  A = dilate(erode(A, W, H, rad), W, H, rad);
-  A = erode(dilate(A, W, H, rad), W, H, rad);
-
-  // Nur Flächen behalten, die die Markierung berühren
   {
-    const { lab, info } = components(A, W, H, 1);
-    const hits = new Int32Array(info.length + 1);
-    for (let k = 0; k < N; k++) if (lab[k] && mask[k]) hits[lab[k]]++;
-    for (let k = 0; k < N; k++) {
-      if (!lab[k]) continue;
+    const { lab, info } = components(holeCand, w, h, 1);
+    for (let k = 0; k < n; k++) if (lab[k] && info[lab[k] - 1].area >= Math.max(20, area * 0.002)) M[k] = 0;
+  }
+
+  // Schatten auf dem Tisch: Teile außerhalb des Körpers, die nur im unteren Bereich liegen
+  {
+    const outside = new Uint8Array(n);
+    for (let y = 0; y < h; y++) {
+      const r = bodyHalf(y);
+      for (let x = 0; x < w; x++) {
+        const k = y * w + x;
+        if (M[k] && (r < 0 || Math.abs(x - axis) - r > margin)) outside[k] = 1;
+      }
+    }
+    const { lab, info } = components(outside, w, h, 1);
+    const minY = new Float32Array(info.length + 1).fill(Infinity);
+    const maxY = new Float32Array(info.length + 1).fill(-Infinity);
+    for (let k = 0; k < n; k++) if (lab[k]) {
+      const y = Math.floor(k / w);
+      if (y < minY[lab[k]]) minY[lab[k]] = y;
+      if (y > maxY[lab[k]]) maxY[lab[k]] = y;
+    }
+    for (let k = 0; k < n; k++) {
       const id = lab[k];
-      if (hits[id] < Math.max(15, info[id - 1].area * 0.03)) A[k] = 0;
+      if (id && minY[id] > top + L * 0.45 && maxY[id] > top + L * 0.8) M[k] = 0;
     }
   }
-  A = keepLarge(A, W, H);
-  A = fillSmallHoles(A, W, H);
 
-  // Kontur nachziehen, vereinfachen, glätten
-  const rawContours = traceContours(A, W, H).filter(c => c.length >= 12);
-  const attachments = [];
-  const outline = [];
-  for (const c of rawContours) {
-    let pts = smoothClosed(simplifyClosed(c, 0.8), 2);
-    outline.push(pts.map(([X, Y]) => [bx0 + X / scale / NW, by0 + Y / scale / NH]));
-    // in Blaupausen-Koordinaten: x und t in Einheiten der Stückhöhe
-    const norm = pts.map(([X, Y]) => { const [ax, ay] = toA(X, Y); return [(ax - axis) / hgt, (ay - top) / hgt]; });
-    // Abschnitte direkt an der Wand des Stücks weglassen – dort läuft die Körperlinie
-    const near = ([x, t]) => {
-      const row = Math.round(t * hgt);
-      return row >= 0 && row < hw.length && Math.abs(x) * hgt <= hw[row] + margin + 2;
-    };
-    const lines = splitOpen(norm, near).filter(l => l.length >= 3)
-      .map(l => l.map(([x, t]) => [Math.round(x * 10000) / 10000, Math.round(t * 10000) / 10000]));
-    if (lines.length) attachments.push(lines);
+  // Korrekturen mit dem Finger: Hinzufügen / Entfernen (spätere Striche gewinnen)
+  if (brush.length) {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (const st of brush) {
+      ctx.strokeStyle = ctx.fillStyle = st.erase ? '#000' : '#fff';
+      ctx.lineWidth = 2 * st.r * IW;
+      const px = ([x, y]) => [x * IW - x0, y * IH - y0];
+      ctx.beginPath();
+      st.pts.forEach((q, i) => { const [x, y] = px(q); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      if (st.pts.length === 1) { const [x, y] = px(st.pts[0]); ctx.arc(x, y, st.r * IW, 0, Math.PI * 2); ctx.fill(); }
+      else ctx.stroke();
+    }
+    const d = ctx.getImageData(0, 0, w, h).data;
+    for (let k = 0; k < n; k++) {
+      if (d[k * 4 + 3] < 128) continue;
+      if (d[k * 4] > 128) { if (dist[k] >= T * 0.5) M[k] = 1; } else M[k] = 0;
+    }
   }
-  // Konturen eines Anbaus (außen + Loch) zusammenfassen: nach Lage gruppieren
-  const groups = [];
-  for (const lines of attachments) {
-    const xs = lines.flat().map(p => p[0]), ts = lines.flat().map(p => p[1]);
-    const box = [Math.min(...xs), Math.min(...ts), Math.max(...xs), Math.max(...ts)];
-    const g = groups.find(o => box[0] >= o.box[0] - 0.01 && box[2] <= o.box[2] + 0.01 && box[1] >= o.box[1] - 0.01 && box[3] <= o.box[3] + 0.01);
-    if (g) g.lines.push(...lines);
-    else groups.push({ box, lines: [...lines] });
+
+  // Bereinigen
+  M = dilate(erode(M, w, h, 1), w, h, 1);
+  M = erode(dilate(M, w, h, 1), w, h, 1);
+  M = keepLarge(M, w, h);
+  M = fillHolesBelow(M, w, h, Math.max(20, area * 0.002));
+
+  const outlines = [];
+  const outlineRel = [];
+  for (const c of traceContours(M, w, h)) {
+    if (c.length < 12) continue;
+    const pts = smoothClosed(simplifyClosed(c, 0.7), 2);
+    outlineRel.push(pts.map(([x, y]) => [(x + x0) / IW, (y + y0) / IH]));
+    outlines.push(pts.map(([x, y]) => [Math.round(((x - axis) / hgt) * 10000) / 10000, Math.round(((y - top) / hgt) * 10000) / 10000]));
   }
-  return {
-    attachments: groups.map(g => ({ lines: g.lines, side: g.box[0] + g.box[2] >= 0 ? 'right' : 'left' })),
-    outline,
+  return { mask: M, outlines, outlineRel };
+}
+
+function fillHolesBelow(A, W, H, maxArea) {
+  const { lab, info } = components(A, W, H, 0);
+  const out = A.slice();
+  for (let k = 0; k < W * H; k++) {
+    if (lab[k]) { const i = info[lab[k] - 1]; if (!i.border && i.area < maxArea) out[k] = 1; }
+  }
+  return out;
+}
+
+// Linien im Stück finden: Kanten (Canny-artig) auf geglättetem Bild, nur lange,
+// eher waagrechte Linien – so bleiben Rand, Rillen und Fußkante, das Craquelé fällt weg.
+function detectInnerLines({ Y, U, V, w, h, mask, axis, top, hgt, rmax, rimZone }) {
+  const n = w * h;
+  const blur = src => {
+    let a = Float32Array.from(src);
+    const k = [1, 4, 6, 4, 1];
+    for (let pass = 0; pass < 3; pass++) {
+      const t = new Float32Array(n);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        let s = 0, ws = 0;
+        for (let j = -2; j <= 2; j++) { const xx = x + j; if (xx >= 0 && xx < w) { s += a[y * w + xx] * k[j + 2]; ws += k[j + 2]; } }
+        t[y * w + x] = s / ws;
+      }
+      const o = new Float32Array(n);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        let s = 0, ws = 0;
+        for (let j = -2; j <= 2; j++) { const yy = y + j; if (yy >= 0 && yy < h) { s += t[yy * w + x] * k[j + 2]; ws += k[j + 2]; } }
+        o[y * w + x] = s / ws;
+      }
+      a = o;
+    }
+    return a;
   };
+  const bY = blur(Y), bU = blur(U), bV = blur(V);
+  // Innenbereich (Abstand zur Silhouette)
+  const inside = erode(mask, w, h, 4);
+  const mag = new Float32Array(n);
+  const dir = new Uint8Array(n);
+  const vals = [];
+  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+    const k = y * w + x;
+    if (!inside[k]) continue;
+    let gx = 0, gy = 0;
+    for (const ch of [bY, bU, bV]) {
+      const wgt = ch === bY ? 1.6 : 0.6;
+      const cx = (ch[k + 1] - ch[k - 1]) * wgt, cy = (ch[k + w] - ch[k - w]) * wgt;
+      gx += cx * Math.abs(cx); gy += cy * Math.abs(cy);
+    }
+    gx = Math.sign(gx) * Math.sqrt(Math.abs(gx)); gy = Math.sign(gy) * Math.sqrt(Math.abs(gy));
+    const m = Math.hypot(gx, gy);
+    mag[k] = m;
+    const ang = (Math.atan2(gy, gx) * 180) / Math.PI;
+    const a = (ang + 180) % 180;
+    dir[k] = a < 22.5 || a >= 157.5 ? 0 : a < 67.5 ? 1 : a < 112.5 ? 2 : 3;
+    vals.push(m);
+  }
+  if (vals.length < 100) return [];
+  vals.sort((a, b) => a - b);
+  const hi = vals[Math.floor(vals.length * 0.93)];
+  const lo = hi * 0.45;
+  // Nicht-Maximum-Unterdrückung
+  const edge = new Uint8Array(n);
+  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+    const k = y * w + x;
+    const m = mag[k];
+    if (m < lo) continue;
+    const [a, b] = [[k - 1, k + 1], [k - w - 1, k + w + 1], [k - w, k + w], [k - w + 1, k + w - 1]][dir[k]];
+    if (m >= mag[a] && m >= mag[b]) edge[k] = m >= hi ? 2 : 1;
+  }
+  // Hysterese: schwache Kanten nur, wenn mit starken verbunden
+  const strong = new Uint8Array(n);
+  const queue = [];
+  for (let k = 0; k < n; k++) if (edge[k] === 2) { strong[k] = 1; queue.push(k); }
+  while (queue.length) {
+    const k = queue.pop();
+    for (const d of [-1, 1, -w, w, -w - 1, -w + 1, w - 1, w + 1]) {
+      const q = k + d;
+      if (q >= 0 && q < n && edge[q] && !strong[q]) { strong[q] = 1; queue.push(q); }
+    }
+  }
+  // Ketten verfolgen
+  const nb = k => [-1, 1, -w, w, -w - 1, -w + 1, w - 1, w + 1].map(d => k + d).filter(q => q >= 0 && q < n && strong[q]);
+  const seen = new Uint8Array(n);
+  const chains = [];
+  const walk = s => {
+    const chain = [];
+    let cur = s;
+    while (cur !== undefined && !seen[cur]) {
+      seen[cur] = 1;
+      chain.push([cur % w, Math.floor(cur / w)]);
+      cur = nb(cur).find(q => !seen[q]);
+    }
+    return chain;
+  };
+  for (let k = 0; k < n; k++) if (strong[k] && !seen[k] && nb(k).length <= 1) chains.push(walk(k));
+  for (let k = 0; k < n; k++) if (strong[k] && !seen[k]) chains.push(walk(k));
+
+  const minLen = 0.25 * 2 * rmax;
+  const lines = [];
+  for (const c of chains) {
+    if (c.length < minLen) continue;
+    const xs = c.map(p => p[0]), ys = c.map(p => p[1]);
+    const bw = Math.max(...xs) - Math.min(...xs), bh = Math.max(...ys) - Math.min(...ys);
+    if (bw < minLen || bh > bw * 0.5) continue; // nur lange, eher waagrechte Linien
+    if (Math.max(...ys) < top + rimZone) continue; // Öffnung wird als Ellipse gezeichnet
+    const [sx, sy] = c[0], [ex, ey] = c[c.length - 1];
+    if (Math.hypot(ex - sx, ey - sy) < bw * 0.3 && bw < 1.4 * rmax) continue; // geschlossene Ringe = Glanzlichter
+    const pts = smoothOpen(simplifyOpen(c, 1), 2);
+    lines.push(pts.map(([x, y]) => [Math.round(((x - axis) / hgt) * 10000) / 10000, Math.round(((y - top) / hgt) * 10000) / 10000]));
+  }
+  return lines.slice(0, 12);
+}
+
+function simplifyOpen(arr, eps) {
+  if (arr.length < 3) return arr;
+  const [ax, ay] = arr[0], [bx, by] = arr[arr.length - 1];
+  const len = Math.hypot(bx - ax, by - ay) || 1;
+  let maxD = -1, idx = 0;
+  for (let i = 1; i < arr.length - 1; i++) {
+    const d = Math.abs((bx - ax) * (ay - arr[i][1]) - (ax - arr[i][0]) * (by - ay)) / len;
+    if (d > maxD) { maxD = d; idx = i; }
+  }
+  if (maxD <= eps) return [arr[0], arr[arr.length - 1]];
+  return [...simplifyOpen(arr.slice(0, idx + 1), eps).slice(0, -1), ...simplifyOpen(arr.slice(idx), eps)];
+}
+
+function smoothOpen(pts, iterations) {
+  let cur = pts;
+  for (let it = 0; it < iterations; it++) {
+    if (cur.length < 3) return cur;
+    const out = [cur[0]];
+    for (let i = 0; i < cur.length - 1; i++) {
+      const [ax, ay] = cur[i], [bx, by] = cur[i + 1];
+      out.push([0.75 * ax + 0.25 * bx, 0.75 * ay + 0.25 * by], [0.25 * ax + 0.75 * bx, 0.25 * ay + 0.75 * by]);
+    }
+    out.push(cur[cur.length - 1]);
+    cur = out;
+  }
+  return cur;
 }
 
 function erode(A, W, H, r) {
@@ -475,17 +586,6 @@ function keepLarge(A, W, H) {
   const maxArea = Math.max(0, ...info.map(i => i.area));
   const out = new Uint8Array(W * H);
   for (let k = 0; k < W * H; k++) if (lab[k] && info[lab[k] - 1].area >= Math.max(30, maxArea * 0.1)) out[k] = 1;
-  return out;
-}
-
-function fillSmallHoles(A, W, H) {
-  let total = 0;
-  for (const v of A) total += v;
-  const { lab, info } = components(A, W, H, 0);
-  const out = A.slice();
-  for (let k = 0; k < W * H; k++) {
-    if (lab[k]) { const i = info[lab[k] - 1]; if (!i.border && i.area < total * 0.04) out[k] = 1; }
-  }
   return out;
 }
 
@@ -562,22 +662,6 @@ function smoothClosed(pts, iterations) {
     cur = out;
   }
   return cur;
-}
-
-// Geschlossene Linie an Stellen auftrennen, die `drop` erfüllen
-function splitOpen(pts, drop) {
-  const keep = pts.map(p => !drop(p));
-  if (keep.every(Boolean)) return [[...pts, pts[0]]];
-  const start = keep.findIndex(k => !k);
-  const lines = [];
-  let cur = [];
-  for (let j = 1; j <= pts.length; j++) {
-    const i = (start + j) % pts.length;
-    if (keep[i]) cur.push(pts[i]);
-    else if (cur.length) { lines.push(cur); cur = []; }
-  }
-  if (cur.length) lines.push(cur);
-  return lines;
 }
 
 function otsu(values, max) {
@@ -828,68 +912,98 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
   const rmax = Math.max(...prof, 0.02);
   const W = 400;
   const rAt = profileAt(prof);
+  const sil = bp.silhouette;
+  const ell = sil ? Math.max(0.04, bp.tilt ?? ELLIPSE) : ELLIPSE;
 
-  // Anbauten (Henkel …): liegen alle auf einer Seite, werden sie links gezeichnet,
-  // damit rechts Platz für die Beschriftung bleibt.
-  const rawAtt = bp.attachments || [];
+  // Ältere Blaupausen ohne Ausschnitt: Anbauten links zeichnen
+  const rawAtt = sil ? [] : bp.attachments || [];
   const flip = rawAtt.length && rawAtt.every(a => a.side === 'right') ? -1 : 1;
   const atts = rawAtt.map(a => ({ ...a, lines: a.lines.map(l => l.map(([x, t]) => [x * flip, t])) }));
-  const attPts = atts.flatMap(a => a.lines.flat());
-  const extL = Math.max(rmax, ...attPts.map(p => -p[0]));
-  const extR = Math.max(rmax, ...attPts.map(p => p[0]));
-  const minT = Math.min(0, ...attPts.map(p => p[1]));
-  const maxT = Math.max(1, ...attPts.map(p => p[1]));
+
+  // Henkel im Ausschnitt finden: Teile der Außenkontur, die deutlich über den Körper hinausragen
+  let handle = null;
+  if (sil?.outlines.length) {
+    const outer = sil.outlines.reduce((a, b) => (b.length > a.length ? b : a));
+    const off = outer.filter(([x, t]) => t > -0.05 && t < 1.05 && Math.abs(x) - rAt(Math.max(0, Math.min(1, t))) > 0.05);
+    if (off.length >= 8) {
+      const ts = off.map(p => p[1]);
+      const t0 = Math.min(...ts), t1 = Math.max(...ts);
+      if (t1 - t0 > 0.1) {
+        const side = Math.sign(off.reduce((a, p) => a + p[0], 0)) || 1;
+        handle = { t0, t1, side, reach: Math.max(...off.map(([x, t]) => Math.abs(x) - rAt(Math.max(0, Math.min(1, t))))) };
+      }
+    }
+  }
+  // Beschriftung auf die Seite ohne Henkel, Höhenmaß auf die andere
+  const side = handle?.side > 0 ? -1 : 1;
+
+  const ext = sil ? [...sil.outlines.flat(), ...sil.inner.flat()] : atts.flatMap(a => a.lines.flat());
+  const extL = Math.max(rmax, ...ext.map(p => -p[0]));
+  const extR = Math.max(rmax, ...ext.map(p => p[0]));
+  const minT = Math.min(0, ...ext.map(p => p[1]));
+  const maxT = Math.max(1, ...ext.map(p => p[1]));
 
   const Hd = Math.min(340, 184 / (extL + extR));
   const half = rmax * Hd;
   const titleLines = wrap(title, 22).slice(0, 2);
   const titleH = titleLines.length ? 30 + titleLines.length * 26 : 24;
-  const top = titleH + Math.max(prof[0] * Hd * ELLIPSE, -minT * Hd) + 22;
+  const top = titleH + Math.max(prof[0] * Hd * ell, -minT * Hd) + 22;
   const bottom = top + Hd;
-  const axis = 64 + extL * Hd;
-  const labelX = Math.min(axis + extR * Hd + 34, W - 118);
+  const axis = (side > 0 ? 64 : 152) + extL * Hd;
+  const labelX = side > 0 ? Math.min(axis + extR * Hd + 34, W - 118) : Math.max(axis - extL * Hd - 34, 118);
+  const hx = side > 0 ? axis - extL * Hd - 30 : axis + extR * Hd + 30;
   const est = estimate(bp, values, pos);
 
   const points = effectivePoints(bp);
   const yOf = t => top + t * Hd;
-
-  // Kontur
-  const contour = sign => prof.map((r, i) => `${i ? 'L' : 'M'}${(axis + sign * r * Hd).toFixed(1)} ${yOf(i / (n - 1)).toFixed(1)}`).join('');
+  const X = x => (axis + x * Hd).toFixed(1);
+  const Yt = t => yOf(t).toFixed(1);
   const arc = (t, front) => {
     const rx = rAt(t) * Hd;
-    const ry = rx * ELLIPSE;
+    const ry = rx * ell;
     const y = yOf(t);
     return `M${(axis - rx).toFixed(1)} ${y.toFixed(1)}A${rx.toFixed(1)} ${ry.toFixed(1)} 0 0 ${front ? 0 : 1} ${(axis + rx).toFixed(1)} ${y.toFixed(1)}`;
   };
 
   const interior = points.filter(p => p.t != null && p.t > 0 && p.t < 1);
-  let shape = `<path d="${contour(-1)}"/><path d="${contour(1)}"/>`;
-  shape += `<ellipse cx="${axis}" cy="${top}" rx="${(prof[0] * Hd).toFixed(1)}" ry="${(prof[0] * Hd * ELLIPSE).toFixed(1)}"/>`;
-  shape += `<path d="${arc(1, true)}"/><path d="${arc(1, false)}" class="dash"/>`;
-  for (const p of interior) shape += `<path d="${arc(p.t, true)}" class="thin"/><path d="${arc(p.t, false)}" class="dash"/>`;
-  for (const a of atts) {
-    for (const l of a.lines) shape += `<path d="${l.map(([x, t], i) => `${i ? 'L' : 'M'}${(axis + x * Hd).toFixed(1)} ${yOf(t).toFixed(1)}`).join('')}"/>`;
+  let shape = '';
+  if (sil) {
+    // Ausschnitt wie fotografiert: Außenkontur, Löcher, Linien im Stück
+    for (const o of sil.outlines) shape += `<path d="${o.map(([x, t], i) => `${i ? 'L' : 'M'}${X(x)} ${Yt(t)}`).join('')}Z"/>`;
+    for (const l of sil.inner) shape += `<path d="${l.map(([x, t], i) => `${i ? 'L' : 'M'}${X(x)} ${Yt(t)}`).join('')}" class="inner"/>`;
+    shape += `<path d="${arc(0, true)}"/>`;
+    shape += `<path d="${arc(1, false)}" class="dash"/>`;
+  } else {
+    const contour = sgn => prof.map((r, i) => `${i ? 'L' : 'M'}${(axis + sgn * r * Hd).toFixed(1)} ${yOf(i / (n - 1)).toFixed(1)}`).join('');
+    shape += `<path d="${contour(-1)}"/><path d="${contour(1)}"/>`;
+    shape += `<ellipse cx="${axis}" cy="${top}" rx="${(prof[0] * Hd).toFixed(1)}" ry="${(prof[0] * Hd * ell).toFixed(1)}"/>`;
+    shape += `<path d="${arc(1, true)}"/><path d="${arc(1, false)}" class="dash"/>`;
+    for (const a of atts) for (const l of a.lines) shape += `<path d="${l.map(([x, t], i) => `${i ? 'L' : 'M'}${X(x)} ${Yt(t)}`).join('')}"/>`;
   }
+  for (const p of interior) shape += `<path d="${arc(p.t, true)}" class="thin"/><path d="${arc(p.t, false)}" class="dash"/>`;
 
-  // Maße der Anbauten als Text: Ansatzhöhen und wie weit sie abstehen
-  const attInfo = [];
-  atts.forEach((a, i) => {
+  // Henkelmaße als Text: Ansatzhöhen und wie weit er absteht
+  const handles = handle ? [{ ...handle, name: 'Henkel' }] : atts.map((a, i) => {
     const pts = a.lines.flat();
-    const t0 = Math.min(...pts.map(p => p[1]));
-    const t1 = Math.max(...pts.map(p => p[1]));
-    const reach = Math.max(0, ...pts.map(([x, t]) => Math.abs(x) - rAt(Math.max(0, Math.min(1, t)))));
-    const name = a.label || (atts.length > 1 ? `Anbau ${i + 1}` : 'Henkel');
-    if (est.scale) {
-      attInfo.push(`${name}: ≈ ${fmtCm((t1 - t0) * est.scale)} hoch, steht ≈ ${fmtCm(reach * est.scale)} ab`);
-      attInfo.push(`ansetzen auf ≈ ${fmtCm(Math.max(0, 1 - t1) * est.scale)} und ≈ ${fmtCm(Math.max(0, 1 - t0) * est.scale)} Höhe`);
-    } else {
-      attInfo.push(`${name}: ${Math.round((t1 - t0) * 100)} % der Höhe, steht ${Math.round(reach * 100)} % ab`);
-    }
+    return {
+      t0: Math.min(...pts.map(p => p[1])), t1: Math.max(...pts.map(p => p[1])),
+      reach: Math.max(0, ...pts.map(([x, t]) => Math.abs(x) - rAt(Math.max(0, Math.min(1, t))))),
+      name: a.label || (atts.length > 1 ? `Anbau ${i + 1}` : 'Henkel'),
+    };
   });
+  const attInfo = [];
+  for (const a of handles) {
+    if (est.scale) {
+      attInfo.push(`${a.name}: ≈ ${fmtCm((a.t1 - a.t0) * est.scale)} hoch, steht ≈ ${fmtCm(a.reach * est.scale)} ab`);
+      attInfo.push(`ansetzen auf ≈ ${fmtCm(Math.max(0, 1 - a.t1) * est.scale)} und ≈ ${fmtCm(Math.max(0, 1 - a.t0) * est.scale)} Höhe`);
+    } else {
+      attInfo.push(`${a.name}: ${Math.round((a.t1 - a.t0) * 100)} % der Höhe, steht ${Math.round(a.reach * 100)} % ab`);
+    }
+  }
   info = [...info, ...attInfo];
 
-  // Beschriftungen rechts, ohne Überlappung
-  const items = points.filter(p => p.t != null).map(p => ({ p, yA: yOf(p.t), xA: axis + rAt(p.t) * Hd })).sort((a, b) => a.yA - b.yA);
+  // Beschriftungen ohne Überlappung
+  const items = points.filter(p => p.t != null).map(p => ({ p, yA: yOf(p.t), xA: axis + side * rAt(p.t) * Hd })).sort((a, b) => a.yA - b.yA);
   let prevY = -Infinity;
   for (const it of items) {
     it.yL = Math.max(it.yA, prevY + 46);
@@ -910,36 +1024,40 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
   };
 
   const btn = key => (interactive ? ` data-bp-key="${key}" role="button" tabindex="0"` : '');
+  const anchor = side > 0 ? '' : ' text-anchor="end"';
   let labels = '';
   for (const { p, yA, xA, yL } of items) {
     const v = valueText(p);
     const ps = posText(p);
-    labels += `<path d="M${(xA + 4).toFixed(1)} ${yA.toFixed(1)}L${labelX - 22} ${yA.toFixed(1)}L${labelX - 8} ${yL.toFixed(1)}" class="lead"/>`;
+    labels += `<path d="M${(xA + side * 4).toFixed(1)} ${yA.toFixed(1)}L${labelX - side * 22} ${yA.toFixed(1)}L${labelX - side * 8} ${yL.toFixed(1)}" class="lead"/>`;
     labels += `<circle cx="${xA.toFixed(1)}" cy="${yA.toFixed(1)}" r="3" class="dot"/>`;
-    labels += `<g class="lbl"${btn(p.key)}><rect x="${labelX - 8}" y="${(yL - 19).toFixed(1)}" width="${W - labelX + 6}" height="44" rx="8" class="hit"/>
-      <text x="${labelX}" y="${(yL - 4).toFixed(1)}" class="name">${escXml(p.label)}</text>
-      <text x="${labelX}" y="${(yL + 12).toFixed(1)}" class="${v.cls}">${escXml(v.text)}</text>
-      ${ps ? `<text x="${labelX}" y="${(yL + 24).toFixed(1)}" class="pos">${escXml(ps)}</text>` : ''}</g>`;
+    const rx = side > 0 ? labelX - 8 : 2;
+    const rw = side > 0 ? W - labelX + 6 : labelX + 6;
+    labels += `<g class="lbl"${btn(p.key)}><rect x="${rx}" y="${(yL - 19).toFixed(1)}" width="${rw}" height="44" rx="8" class="hit"/>
+      <text x="${labelX}" y="${(yL - 4).toFixed(1)}" class="name"${anchor}>${escXml(p.label)}</text>
+      <text x="${labelX}" y="${(yL + 12).toFixed(1)}" class="${v.cls}"${anchor}>${escXml(v.text)}</text>
+      ${ps ? `<text x="${labelX}" y="${(yL + 24).toFixed(1)}" class="pos"${anchor}>${escXml(ps)}</text>` : ''}</g>`;
   }
 
-  // Höhenmaß links
+  // Höhenmaß auf der anderen Seite
   const hp = points.find(p => p.key === 'hoehe');
-  const hx = axis - extL * Hd - 30;
   let height = '';
   if (hp) {
     const v = valueText(hp);
     const mid = (top + bottom) / 2;
     height += `<path d="M${hx} ${top}V${bottom}M${hx - 6} ${top}h12M${hx - 6} ${bottom}h12M${hx - 4} ${top + 7}l4 -7l4 7M${hx - 4} ${bottom - 7}l4 7l4 -7" class="dim"/>`;
     for (const p of interior) {
-      const y = yOf(p.t);
-      height += `<path d="M${hx - 4} ${y.toFixed(1)}h8" class="dim"/><path d="M${hx + 6} ${y.toFixed(1)}L${(axis - rAt(p.t) * Hd - 6).toFixed(1)} ${y.toFixed(1)}" class="guide"/>`;
+      const y = yOf(p.t).toFixed(1);
+      const edge = axis - side * (rAt(p.t) * Hd + 6);
+      height += `<path d="M${hx - 4} ${y}h8" class="dim"/><path d="M${hx + side * 6} ${y}L${edge.toFixed(1)} ${y}" class="guide"/>`;
     }
-    height += `<g class="lbl"${btn('hoehe')}><rect x="${hx - 34}" y="${mid - 80}" width="30" height="160" rx="8" class="hit"/>
-      <text transform="translate(${hx - 12} ${mid}) rotate(-90)" text-anchor="middle" class="${v.cls}">Höhe ${escXml(v.text)}</text></g>`;
+    const tx = side > 0 ? hx - 12 : hx + 22;
+    height += `<g class="lbl"${btn('hoehe')}><rect x="${tx - 22}" y="${mid - 80}" width="30" height="160" rx="8" class="hit"/>
+      <text transform="translate(${tx} ${mid}) rotate(-90)" text-anchor="middle" class="${v.cls}">Höhe ${escXml(v.text)}</text></g>`;
   }
 
   const lastLabel = items.length ? items[items.length - 1].yL + 34 : 0;
-  const infoTop = Math.max(Math.max(bottom + rAt(1) * Hd * ELLIPSE, top + maxT * Hd) + 40, lastLabel + 16);
+  const infoTop = Math.max(Math.max(bottom + rAt(1) * Hd * ell, top + maxT * Hd) + 40, lastLabel + 16);
   const infoSvg = info.map((line, i) => `<text x="22" y="${infoTop + i * 21}" class="info${i ? '' : ' strong'}">${escXml(line)}</text>`).join('');
   const H = Math.ceil(infoTop + Math.max(0, info.length - 1) * 21 + 26);
 
@@ -951,6 +1069,7 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
     #${uid} text { font-family: "Avenir Next", Futura, "Century Gothic", -apple-system, "Segoe UI", sans-serif; fill: ${INK}; }
     #${uid} .shape path, #${uid} .shape ellipse { fill: none; stroke: ${LINE}; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
     #${uid} .shape .thin { stroke-width: 1.6; opacity: .8; }
+    #${uid} .shape .inner { stroke-width: 1.8; opacity: .9; }
     #${uid} .shape .dash { stroke-dasharray: 7 6; stroke-width: 2.2; }
     #${uid} .lead { fill: none; stroke: ${INK}; stroke-width: 1; opacity: .5; }
     #${uid} .dot { fill: ${INK}; }

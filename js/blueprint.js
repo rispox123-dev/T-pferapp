@@ -1,704 +1,16 @@
-// Blaupause: Umriss eines Werkstücks aus einem Foto erkennen und als Zeichnung darstellen.
+// Blaupause: markante Stellen einer Kontur, Maße schätzen und die Zeichnung.
 //
-// Ablauf der Erkennung:
-// 1. Foto verkleinern, Farben am Bildrand als „Hintergrund“ merken.
-// 2. Vom Rand aus alles einfärben, was dem Hintergrund ähnelt (Flutfüllung).
-// 3. Was übrig bleibt, ist das Werkstück. Da gedrehte Stücke symmetrisch sind,
-//    wird je Bildzeile der Abstand zur Mittelachse gemessen (kürzere Seite –
-//    so stören Henkel nicht).
-// 4. Aus diesem Profil werden markante Stellen gesucht: Rand, Boden,
-//    breiteste Stelle (Bauch) und engste Stelle (Hals/Taille).
+// Die Kontur (Profil) kommt aus der Formerkennung (erkennung.js): Radius/Höhe an
+// PROFILE_POINTS Stellen von der Öffnung (t = 0) bis zum Boden (t = 1), dazu Henkel.
+// Gezeichnet wird das Stück aus leicht erhöhter Sicht, damit Öffnung und Boden als
+// Ellipsen erscheinen – auch wenn das Foto frontal aufgenommen wurde.
 
-export const PROFILE_POINTS = 200;
-export const DEFAULT_CROP = { x0: 0.03, y0: 0.03, x1: 0.97, y1: 0.97 };
-export const DEFAULT_SENS = 50;
+export { PROFILE_POINTS } from './erkennung.js';
 
-const ANALYSIS_SIZE = 640;
-const ELLIPSE = 0.2; // Neigung der Ellipsen in der Zeichnung (Blick leicht von oben)
+// Blickwinkel der Zeichnung (Grad über der Waagrechten)
+export const BLICK = 18;
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-
-// ---------------------------------------------------------------------------
-// Erkennung
-// ---------------------------------------------------------------------------
-
-function blobToImage(blob) {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(blob);
-    const img = new Image();
-    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Foto konnte nicht gelesen werden')); };
-    img.src = url;
-  });
-}
-
-export async function loadForAnalysis(blob) {
-  const img = await blobToImage(blob);
-  const ratio = Math.min(1, ANALYSIS_SIZE / Math.max(img.naturalWidth, img.naturalHeight));
-  const width = Math.max(1, Math.round(img.naturalWidth * ratio));
-  const height = Math.max(1, Math.round(img.naturalHeight * ratio));
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(img, 0, 0, width, height);
-  return { img, width, height, data: ctx.getImageData(0, 0, width, height).data };
-}
-
-export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS, brush = [] } = {}) {
-  const { width: IW, height: IH, data } = src;
-  const x0 = clamp(Math.round(crop.x0 * IW), 0, IW - 8);
-  const x1 = clamp(Math.round(crop.x1 * IW), x0 + 8, IW);
-  const y0 = clamp(Math.round(crop.y0 * IH), 0, IH - 8);
-  const y1 = clamp(Math.round(crop.y1 * IH), y0 + 8, IH);
-  const w = x1 - x0;
-  const h = y1 - y0;
-  const n = w * h;
-
-  // Farben in Helligkeit + Farbanteil zerlegen; Helligkeit zählt weniger,
-  // damit Schatten eher zum Hintergrund gerechnet werden.
-  const Y = new Float32Array(n);
-  const U = new Float32Array(n);
-  const V = new Float32Array(n);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = ((y + y0) * IW + x + x0) * 4;
-      const r = data[i], g = data[i + 1], b = data[i + 2];
-      const l = 0.299 * r + 0.587 * g + 0.114 * b;
-      const k = y * w + x;
-      Y[k] = l * 0.6;
-      U[k] = b - l;
-      V[k] = r - l;
-    }
-  }
-
-  // Hintergrundfarben am Rand des Ausschnitts sammeln
-  const border = [];
-  for (let x = 0; x < w; x++) border.push(x, (h - 1) * w + x);
-  for (let y = 1; y < h - 1; y++) border.push(y * w, y * w + w - 1);
-  const step = Math.max(1, Math.floor(border.length / 160));
-  const samples = [];
-  for (let i = 0; i < border.length; i += step) {
-    const k = border[i];
-    if (!samples.some(s => Math.abs(s[0] - Y[k]) + Math.abs(s[1] - U[k]) + Math.abs(s[2] - V[k]) < 4)) samples.push([Y[k], U[k], V[k]]);
-  }
-
-  // Abstand jedes Pixels zur nächsten Randfarbe
-  const dist = new Float32Array(n);
-  let dMax = 0;
-  for (let k = 0; k < n; k++) {
-    let best = Infinity;
-    for (const s of samples) {
-      const d = (Y[k] - s[0]) ** 2 + (U[k] - s[1]) ** 2 + (V[k] - s[2]) ** 2;
-      if (d < best) best = d;
-    }
-    dist[k] = Math.sqrt(best);
-    if (dist[k] > dMax) dMax = dist[k];
-  }
-
-  // Schwelle automatisch bestimmen (Otsu); der Regler verschiebt sie
-  const T = Math.max(4, otsu(dist, dMax) * 2 ** ((50 - sens) / 50));
-
-  // Flutfüllung vom Rand: alles Hintergrundähnliche, das mit dem Rand verbunden ist
-  const bg = new Uint8Array(n);
-  const queue = new Int32Array(n);
-  let qh = 0, qt = 0;
-  const visit = q => {
-    if (!bg[q] && dist[q] < T) { bg[q] = 1; queue[qt++] = q; }
-  };
-  for (const k of border) visit(k);
-  while (qh < qt) {
-    const p = queue[qh++];
-    const x = p % w;
-    if (x > 0) visit(p - 1);
-    if (x < w - 1) visit(p + 1);
-    if (p >= w) visit(p - w);
-    if (p < n - w) visit(p + w);
-  }
-
-  // Größte zusammenhängende Fläche = Werkstück
-  const comp = new Int32Array(n);
-  let bestId = 0, bestArea = 0, id = 0;
-  for (let s = 0; s < n; s++) {
-    if (bg[s] || comp[s]) continue;
-    id++;
-    let area = 0;
-    qh = qt = 0;
-    queue[qt++] = s;
-    comp[s] = id;
-    while (qh < qt) {
-      const p = queue[qh++];
-      area++;
-      const x = p % w;
-      const nb = [x > 0 ? p - 1 : -1, x < w - 1 ? p + 1 : -1, p >= w ? p - w : -1, p < n - w ? p + w : -1];
-      for (const q of nb) if (q >= 0 && !bg[q] && !comp[q]) { comp[q] = id; queue[qt++] = q; }
-    }
-    if (area > bestArea) { bestArea = area; bestId = id; }
-  }
-  if (bestArea < n * 0.02) throw new Error('Kein Werkstück erkannt. Ziehe den Rahmen enger oder erhöhe die Empfindlichkeit.');
-  if (bestArea > n * 0.96) throw new Error('Werkstück und Hintergrund lassen sich nicht trennen. Verringere die Empfindlichkeit.');
-
-  // Linker und rechter Rand je Zeile
-  const left = new Int32Array(h).fill(-1);
-  const right = new Int32Array(h).fill(-1);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) if (comp[y * w + x] === bestId) { left[y] = x; break; }
-    for (let x = w - 1; x >= 0; x--) if (comp[y * w + x] === bestId) { right[y] = x; break; }
-  }
-  let top = 0, bottom = h - 1;
-  while (left[top] < 0) top++;
-  while (left[bottom] < 0) bottom--;
-
-  // Mittelachse: häufigste Zeilenmitte (Zeilen mit Henkel weichen ab und zählen kaum)
-  const bins = new Map();
-  for (let y = top; y <= bottom; y++) {
-    const b = Math.round((left[y] + right[y]) / 4);
-    bins.set(b, (bins.get(b) || 0) + 1);
-  }
-  let modeBin = 0, modeCount = -1;
-  for (const [b, c] of bins) {
-    const c3 = c + (bins.get(b - 1) || 0) + (bins.get(b + 1) || 0);
-    if (c3 > modeCount) { modeCount = c3; modeBin = b; }
-  }
-  let sum = 0, cnt = 0;
-  for (let y = top; y <= bottom; y++) {
-    const mid = (left[y] + right[y]) / 2;
-    if (Math.abs(mid / 2 - modeBin) <= 1.5) { sum += mid; cnt++; }
-  }
-  const axis = cnt ? sum / cnt : w / 2;
-
-  // Halbe Breite je Zeile. Sind beide Seiten gleich, wird gemittelt. Sonst zählt die
-  // schmalere Seite (Henkel und Schatten machen eine Seite breiter) – außer sie hat dort
-  // eine kurze Delle, z. B. durch eine Spiegelung am Rand; dann zählt die andere Seite.
-  const A = [], B = [];
-  for (let y = top; y <= bottom; y++) {
-    A.push(Math.max(0, axis - left[y] + 0.5));
-    B.push(Math.max(0, right[y] - axis + 0.5));
-  }
-  const win = Math.max(3, Math.round(A.length * 0.08));
-  const medA = median(A, 2 * win + 1);
-  const medB = median(B, 2 * win + 1);
-  let hw = A.map((a, i) => {
-    const b = B[i];
-    const tol = Math.max(2, 0.03 * Math.max(a, b));
-    if (Math.abs(a - b) <= tol) return (a + b) / 2;
-    const aSmall = a < b;
-    const dented = aSmall ? medA[i] - a > tol : medB[i] - b > tol;
-    return aSmall !== dented ? a : b;
-  });
-  hw = smooth(median(hw, 5), Math.max(1, Math.round(hw.length * 0.008)));
-
-  // Perspektive ausgleichen: Von oben fotografiert ist die Öffnung eine Ellipse, deren
-  // hintere Hälfte oben die Silhouette bildet. An diesen Bogen wird eine Ellipse angepasst
-  // (robust gegen Glanzlichter am Rand); ihre Mitte ist die eigentliche Randhöhe.
-  // Die Neigung (Tiefe/Breite) bestimmt dann, wie tief die Bodenellipse unten reicht.
-  const L = hw.length;
-  const lim = Math.round(L * 0.15);
-  let walk = 0;
-  while (walk < lim && (hw[Math.min(L - 1, walk + 4)] - hw[walk]) / 4 > 0.35) walk++;
-  const rimEnd = Math.min(Math.round(L * 0.2), 2 * walk + 10);
-  let rx = 0;
-  for (let i = 0; i <= rimEnd; i++) rx = Math.max(rx, hw[i]);
-  // Für jede Zeile im Bogen: Abstand zur Spitze = ry · (1 − √(1 − (w/rx)²)) → lineare Regression
-  // nur der Teil, in dem die Breite von oben her zunimmt (bis zur ersten vollen Breite)
-  let rimMax = 0;
-  while (rimMax < rimEnd && hw[rimMax] < rx * 0.99) rimMax++;
-  const fit = [];
-  for (let i = 0; i <= rimMax; i++) {
-    const q = hw[i] / rx;
-    if (q >= 0.25 && q <= 0.95) fit.push([1 - Math.sqrt(1 - q * q), i]);
-  }
-  let ryTop = walk;
-  if (fit.length >= 4) {
-    const mf = fit.reduce((a, p) => a + p[0], 0) / fit.length;
-    const mi = fit.reduce((a, p) => a + p[1], 0) / fit.length;
-    let cov = 0, vf = 0;
-    for (const [f, i] of fit) { cov += (f - mf) * (i - mi); vf += (f - mf) ** 2; }
-    if (vf > 1e-6) {
-      const ry = cov / vf;
-      const tip = mi - ry * mf;
-      if (ry > 0) ryTop = clamp(Math.round(tip + ry), walk, Math.max(walk, rimMax));
-    }
-  }
-  const tilt = Math.min(0.5, ryTop / Math.max(1, rx));
-
-  // Unten: sichtbaren Bogen der Bodenellipse messen und mit der Neigung von oben abgleichen
-  let up = 0;
-  while (up < lim && (hw[Math.max(0, L - 5 - up)] - hw[L - 1 - up]) / 4 > 0.35) up++;
-  const footW = hw[L - 1 - up];
-  const expected = tilt * footW;
-  const ryBot = Math.min(Math.round(L * 0.12), Math.round(clamp(up, expected * 0.7, expected * 1.4)));
-  hw = hw.slice(ryTop, L - ryBot);
-  top += ryTop;
-  bottom -= ryBot;
-
-  const hgt = hw.length;
-  if (hgt < 20) throw new Error('Das erkannte Stück ist zu klein. Ziehe den Rahmen enger.');
-
-  const profile = [];
-  for (let i = 0; i < PROFILE_POINTS; i++) {
-    const pos = (i / (PROFILE_POINTS - 1)) * (hgt - 1);
-    const a = Math.floor(pos);
-    const b = Math.min(hgt - 1, a + 1);
-    const v = hw[a] + (hw[b] - hw[a]) * (pos - a);
-    profile.push(Math.round((v / hgt) * 10000) / 10000);
-  }
-
-  // Umriss in relativen Bildkoordinaten (für die Anzeige über dem Foto)
-  const toRel = (x, y) => [(x + x0) / IW, (y + y0) / IH];
-  const outlineL = [], outlineR = [];
-  for (let i = 0; i < PROFILE_POINTS; i += 2) {
-    const y = top + (i / (PROFILE_POINTS - 1)) * (hgt - 1);
-    const r = profile[i] * hgt;
-    outlineL.push(toRel(axis - r, y));
-    outlineR.push(toRel(axis + r, y));
-  }
-
-  // Ausschnitt: tatsächliche Silhouette aus dem Foto (mit Henkel, so wie fotografiert)
-  const sil = buildSilhouette({ comp, bestId, dist, T, w, h, axis, top, hw, ryTop, ryBot, brush, IW, IH, x0, y0, hgt });
-  // Sichtbare Linien im Stück (Öffnung, Rillen, Fußkante …)
-  const inner = detectInnerLines({ Y, U, V, w, h, mask: sil.mask, axis, top, hgt, rmax: Math.max(...hw), rimZone: tilt * hw[0] * 1.6 + 0.02 * hgt });
-
-  return {
-    profile,
-    tilt: Math.round(tilt * 1000) / 1000,
-    silhouette: { outlines: sil.outlines, inner },
-    outline: {
-      left: outlineL, right: outlineR, axis: (axis + x0) / IW, top: (top + y0) / IH, bottom: (bottom + y0) / IH,
-      silhouette: sil.outlineRel,
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Ausschnitt (Silhouette)
-// ---------------------------------------------------------------------------
-
-function buildSilhouette({ comp, bestId, dist, T, w, h, axis, top, hw, ryTop, ryBot, brush, IW, IH, x0, y0, hgt }) {
-  const n = w * h;
-  const L = hw.length;
-  const r0 = hw[0], rN = hw[L - 1];
-  // Halbe Breite des gedrehten Körpers in Zeile y (inkl. Rand- und Bodenellipse)
-  const bodyHalf = y => {
-    const row = y - top;
-    if (row < 0) {
-      if (ryTop <= 0 || row < -ryTop) return -1;
-      return r0 * Math.sqrt(Math.max(0, 1 - (row / ryTop) ** 2));
-    }
-    if (row >= L) {
-      const d = row - (L - 1);
-      if (ryBot <= 0 || d > ryBot) return -1;
-      return rN * Math.sqrt(Math.max(0, 1 - (d / ryBot) ** 2));
-    }
-    return hw[row];
-  };
-  const margin = 1.5 + 0.006 * hgt;
-
-  let M = new Uint8Array(n);
-  let area = 0;
-  for (let k = 0; k < n; k++) if (comp[k] === bestId) { M[k] = 1; area++; }
-
-  for (let y = 0; y < h; y++) {
-    const r = bodyHalf(y);
-    const nearBase = y - top > L * 0.92;
-    for (let x = 0; x < w; x++) {
-      const k = y * w + x;
-      const off = Math.abs(x - axis) - r;
-      if (r >= 0 && off <= 0) M[k] = 1; // Dellen durch Spiegelungen im Körper füllen
-      else if (M[k] && (r < 0 || nearBase) && off > margin) M[k] = 0; // Schatten am Fuß / über dem Rand
-    }
-  }
-
-  // Löcher außerhalb des Körpers (z. B. im Henkel): hintergrundfarbene Flächen ausschneiden
-  const holeCand = new Uint8Array(n);
-  for (let y = 0; y < h; y++) {
-    const r = bodyHalf(y);
-    for (let x = 0; x < w; x++) {
-      const k = y * w + x;
-      if (M[k] && dist[k] < T && (r < 0 || Math.abs(x - axis) - r > margin)) holeCand[k] = 1;
-    }
-  }
-  {
-    const { lab, info } = components(holeCand, w, h, 1);
-    for (let k = 0; k < n; k++) if (lab[k] && info[lab[k] - 1].area >= Math.max(20, area * 0.002)) M[k] = 0;
-  }
-
-  // Schatten auf dem Tisch: Teile außerhalb des Körpers, die nur im unteren Bereich liegen
-  {
-    const outside = new Uint8Array(n);
-    for (let y = 0; y < h; y++) {
-      const r = bodyHalf(y);
-      for (let x = 0; x < w; x++) {
-        const k = y * w + x;
-        if (M[k] && (r < 0 || Math.abs(x - axis) - r > margin)) outside[k] = 1;
-      }
-    }
-    const { lab, info } = components(outside, w, h, 1);
-    const minY = new Float32Array(info.length + 1).fill(Infinity);
-    const maxY = new Float32Array(info.length + 1).fill(-Infinity);
-    for (let k = 0; k < n; k++) if (lab[k]) {
-      const y = Math.floor(k / w);
-      if (y < minY[lab[k]]) minY[lab[k]] = y;
-      if (y > maxY[lab[k]]) maxY[lab[k]] = y;
-    }
-    for (let k = 0; k < n; k++) {
-      const id = lab[k];
-      if (id && minY[id] > top + L * 0.45 && maxY[id] > top + L * 0.8) M[k] = 0;
-    }
-  }
-
-  // Korrekturen mit dem Finger: Hinzufügen / Entfernen (spätere Striche gewinnen)
-  if (brush.length) {
-    const c = document.createElement('canvas');
-    c.width = w; c.height = h;
-    const ctx = c.getContext('2d', { willReadFrequently: true });
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    for (const st of brush) {
-      ctx.strokeStyle = ctx.fillStyle = st.erase ? '#000' : '#fff';
-      ctx.lineWidth = 2 * st.r * IW;
-      const px = ([x, y]) => [x * IW - x0, y * IH - y0];
-      ctx.beginPath();
-      st.pts.forEach((q, i) => { const [x, y] = px(q); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-      if (st.pts.length === 1) { const [x, y] = px(st.pts[0]); ctx.arc(x, y, st.r * IW, 0, Math.PI * 2); ctx.fill(); }
-      else ctx.stroke();
-    }
-    const d = ctx.getImageData(0, 0, w, h).data;
-    for (let k = 0; k < n; k++) {
-      if (d[k * 4 + 3] < 128) continue;
-      if (d[k * 4] > 128) { if (dist[k] >= T * 0.5) M[k] = 1; } else M[k] = 0;
-    }
-  }
-
-  // Bereinigen
-  M = dilate(erode(M, w, h, 1), w, h, 1);
-  M = erode(dilate(M, w, h, 1), w, h, 1);
-  M = keepLarge(M, w, h);
-  M = fillHolesBelow(M, w, h, Math.max(20, area * 0.002));
-
-  const outlines = [];
-  const outlineRel = [];
-  for (const c of traceContours(M, w, h)) {
-    if (c.length < 12) continue;
-    const pts = smoothClosed(simplifyClosed(c, 0.7), 2);
-    outlineRel.push(pts.map(([x, y]) => [(x + x0) / IW, (y + y0) / IH]));
-    outlines.push(pts.map(([x, y]) => [Math.round(((x - axis) / hgt) * 10000) / 10000, Math.round(((y - top) / hgt) * 10000) / 10000]));
-  }
-  return { mask: M, outlines, outlineRel };
-}
-
-function fillHolesBelow(A, W, H, maxArea) {
-  const { lab, info } = components(A, W, H, 0);
-  const out = A.slice();
-  for (let k = 0; k < W * H; k++) {
-    if (lab[k]) { const i = info[lab[k] - 1]; if (!i.border && i.area < maxArea) out[k] = 1; }
-  }
-  return out;
-}
-
-// Linien im Stück finden: Kanten (Canny-artig) auf geglättetem Bild, nur lange,
-// eher waagrechte Linien – so bleiben Rand, Rillen und Fußkante, das Craquelé fällt weg.
-function detectInnerLines({ Y, U, V, w, h, mask, axis, top, hgt, rmax, rimZone }) {
-  const n = w * h;
-  const blur = src => {
-    let a = Float32Array.from(src);
-    const k = [1, 4, 6, 4, 1];
-    for (let pass = 0; pass < 3; pass++) {
-      const t = new Float32Array(n);
-      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-        let s = 0, ws = 0;
-        for (let j = -2; j <= 2; j++) { const xx = x + j; if (xx >= 0 && xx < w) { s += a[y * w + xx] * k[j + 2]; ws += k[j + 2]; } }
-        t[y * w + x] = s / ws;
-      }
-      const o = new Float32Array(n);
-      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-        let s = 0, ws = 0;
-        for (let j = -2; j <= 2; j++) { const yy = y + j; if (yy >= 0 && yy < h) { s += t[yy * w + x] * k[j + 2]; ws += k[j + 2]; } }
-        o[y * w + x] = s / ws;
-      }
-      a = o;
-    }
-    return a;
-  };
-  const bY = blur(Y), bU = blur(U), bV = blur(V);
-  // Innenbereich (Abstand zur Silhouette)
-  const inside = erode(mask, w, h, 4);
-  const mag = new Float32Array(n);
-  const dir = new Uint8Array(n);
-  const vals = [];
-  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
-    const k = y * w + x;
-    if (!inside[k]) continue;
-    let gx = 0, gy = 0;
-    for (const ch of [bY, bU, bV]) {
-      const wgt = ch === bY ? 1.6 : 0.6;
-      const cx = (ch[k + 1] - ch[k - 1]) * wgt, cy = (ch[k + w] - ch[k - w]) * wgt;
-      gx += cx * Math.abs(cx); gy += cy * Math.abs(cy);
-    }
-    gx = Math.sign(gx) * Math.sqrt(Math.abs(gx)); gy = Math.sign(gy) * Math.sqrt(Math.abs(gy));
-    const m = Math.hypot(gx, gy);
-    mag[k] = m;
-    const ang = (Math.atan2(gy, gx) * 180) / Math.PI;
-    const a = (ang + 180) % 180;
-    dir[k] = a < 22.5 || a >= 157.5 ? 0 : a < 67.5 ? 1 : a < 112.5 ? 2 : 3;
-    vals.push(m);
-  }
-  if (vals.length < 100) return [];
-  vals.sort((a, b) => a - b);
-  const hi = vals[Math.floor(vals.length * 0.93)];
-  const lo = hi * 0.45;
-  // Nicht-Maximum-Unterdrückung
-  const edge = new Uint8Array(n);
-  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
-    const k = y * w + x;
-    const m = mag[k];
-    if (m < lo) continue;
-    const [a, b] = [[k - 1, k + 1], [k - w - 1, k + w + 1], [k - w, k + w], [k - w + 1, k + w - 1]][dir[k]];
-    if (m >= mag[a] && m >= mag[b]) edge[k] = m >= hi ? 2 : 1;
-  }
-  // Hysterese: schwache Kanten nur, wenn mit starken verbunden
-  const strong = new Uint8Array(n);
-  const queue = [];
-  for (let k = 0; k < n; k++) if (edge[k] === 2) { strong[k] = 1; queue.push(k); }
-  while (queue.length) {
-    const k = queue.pop();
-    for (const d of [-1, 1, -w, w, -w - 1, -w + 1, w - 1, w + 1]) {
-      const q = k + d;
-      if (q >= 0 && q < n && edge[q] && !strong[q]) { strong[q] = 1; queue.push(q); }
-    }
-  }
-  // Ketten verfolgen
-  const nb = k => [-1, 1, -w, w, -w - 1, -w + 1, w - 1, w + 1].map(d => k + d).filter(q => q >= 0 && q < n && strong[q]);
-  const seen = new Uint8Array(n);
-  const chains = [];
-  const walk = s => {
-    const chain = [];
-    let cur = s;
-    while (cur !== undefined && !seen[cur]) {
-      seen[cur] = 1;
-      chain.push([cur % w, Math.floor(cur / w)]);
-      cur = nb(cur).find(q => !seen[q]);
-    }
-    return chain;
-  };
-  for (let k = 0; k < n; k++) if (strong[k] && !seen[k] && nb(k).length <= 1) chains.push(walk(k));
-  for (let k = 0; k < n; k++) if (strong[k] && !seen[k]) chains.push(walk(k));
-
-  const minLen = 0.25 * 2 * rmax;
-  const lines = [];
-  for (const c of chains) {
-    if (c.length < minLen) continue;
-    const xs = c.map(p => p[0]), ys = c.map(p => p[1]);
-    const bw = Math.max(...xs) - Math.min(...xs), bh = Math.max(...ys) - Math.min(...ys);
-    if (bw < minLen || bh > bw * 0.5) continue; // nur lange, eher waagrechte Linien
-    if (Math.max(...ys) < top + rimZone) continue; // Öffnung wird als Ellipse gezeichnet
-    const [sx, sy] = c[0], [ex, ey] = c[c.length - 1];
-    if (Math.hypot(ex - sx, ey - sy) < bw * 0.3 && bw < 1.4 * rmax) continue; // geschlossene Ringe = Glanzlichter
-    const pts = smoothOpen(simplifyOpen(c, 1), 2);
-    lines.push(pts.map(([x, y]) => [Math.round(((x - axis) / hgt) * 10000) / 10000, Math.round(((y - top) / hgt) * 10000) / 10000]));
-  }
-  return lines.slice(0, 12);
-}
-
-function simplifyOpen(arr, eps) {
-  if (arr.length < 3) return arr;
-  const [ax, ay] = arr[0], [bx, by] = arr[arr.length - 1];
-  const len = Math.hypot(bx - ax, by - ay) || 1;
-  let maxD = -1, idx = 0;
-  for (let i = 1; i < arr.length - 1; i++) {
-    const d = Math.abs((bx - ax) * (ay - arr[i][1]) - (ax - arr[i][0]) * (by - ay)) / len;
-    if (d > maxD) { maxD = d; idx = i; }
-  }
-  if (maxD <= eps) return [arr[0], arr[arr.length - 1]];
-  return [...simplifyOpen(arr.slice(0, idx + 1), eps).slice(0, -1), ...simplifyOpen(arr.slice(idx), eps)];
-}
-
-function smoothOpen(pts, iterations) {
-  let cur = pts;
-  for (let it = 0; it < iterations; it++) {
-    if (cur.length < 3) return cur;
-    const out = [cur[0]];
-    for (let i = 0; i < cur.length - 1; i++) {
-      const [ax, ay] = cur[i], [bx, by] = cur[i + 1];
-      out.push([0.75 * ax + 0.25 * bx, 0.75 * ay + 0.25 * by], [0.25 * ax + 0.75 * bx, 0.25 * ay + 0.75 * by]);
-    }
-    out.push(cur[cur.length - 1]);
-    cur = out;
-  }
-  return cur;
-}
-
-function erode(A, W, H, r) {
-  let cur = A;
-  for (let it = 0; it < r; it++) {
-    const out = new Uint8Array(W * H);
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-      const k = y * W + x;
-      out[k] = cur[k] && (x === 0 || cur[k - 1]) && (x === W - 1 || cur[k + 1]) && (y === 0 || cur[k - W]) && (y === H - 1 || cur[k + W]) ? 1 : 0;
-    }
-    cur = out;
-  }
-  return cur;
-}
-
-function dilate(A, W, H, r) {
-  let cur = A;
-  for (let it = 0; it < r; it++) {
-    const out = new Uint8Array(W * H);
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-      const k = y * W + x;
-      out[k] = cur[k] || (x > 0 && cur[k - 1]) || (x < W - 1 && cur[k + 1]) || (y > 0 && cur[k - W]) || (y < H - 1 && cur[k + W]) ? 1 : 0;
-    }
-    cur = out;
-  }
-  return cur;
-}
-
-// Zusammenhängende Flächen mit Wert `val` beschriften
-function components(A, W, H, val) {
-  const N = W * H;
-  const lab = new Int32Array(N);
-  const queue = new Int32Array(N);
-  const info = [];
-  for (let s = 0; s < N; s++) {
-    if (A[s] !== val || lab[s]) continue;
-    const id = info.length + 1;
-    let qh = 0, qt = 0, area = 0, border = false;
-    queue[qt++] = s;
-    lab[s] = id;
-    while (qh < qt) {
-      const p = queue[qh++];
-      area++;
-      const x = p % W, y = (p / W) | 0;
-      if (x === 0 || y === 0 || x === W - 1 || y === H - 1) border = true;
-      if (x > 0 && A[p - 1] === val && !lab[p - 1]) { lab[p - 1] = id; queue[qt++] = p - 1; }
-      if (x < W - 1 && A[p + 1] === val && !lab[p + 1]) { lab[p + 1] = id; queue[qt++] = p + 1; }
-      if (y > 0 && A[p - W] === val && !lab[p - W]) { lab[p - W] = id; queue[qt++] = p - W; }
-      if (y < H - 1 && A[p + W] === val && !lab[p + W]) { lab[p + W] = id; queue[qt++] = p + W; }
-    }
-    info.push({ area, border });
-  }
-  return { lab, info };
-}
-
-function keepLarge(A, W, H) {
-  const { lab, info } = components(A, W, H, 1);
-  const maxArea = Math.max(0, ...info.map(i => i.area));
-  const out = new Uint8Array(W * H);
-  for (let k = 0; k < W * H; k++) if (lab[k] && info[lab[k] - 1].area >= Math.max(30, maxArea * 0.1)) out[k] = 1;
-  return out;
-}
-
-// Marching Squares: geschlossene Konturen um die Fläche
-function traceContours(A, W, H) {
-  const v = (x, y) => (x >= 0 && y >= 0 && x < W && y < H && A[y * W + x] ? 1 : 0);
-  const adj = new Map();
-  const link = (a, b) => {
-    const ka = a.join(','), kb = b.join(',');
-    if (!adj.has(ka)) adj.set(ka, { p: a, n: [] });
-    if (!adj.has(kb)) adj.set(kb, { p: b, n: [] });
-    adj.get(ka).n.push(kb);
-    adj.get(kb).n.push(ka);
-  };
-  for (let y = -1; y < H; y++) {
-    for (let x = -1; x < W; x++) {
-      const c = v(x, y) * 8 + v(x + 1, y) * 4 + v(x + 1, y + 1) * 2 + v(x, y + 1);
-      if (c === 0 || c === 15) continue;
-      // Kantenmitten (doppelt, damit ganzzahlig): oben, rechts, unten, links
-      const T_ = [2 * x + 1, 2 * y], R = [2 * x + 2, 2 * y + 1], B = [2 * x + 1, 2 * y + 2], L = [2 * x, 2 * y + 1];
-      const segs = {
-        1: [[L, B]], 2: [[B, R]], 3: [[L, R]], 4: [[T_, R]], 5: [[T_, L], [B, R]], 6: [[T_, B]], 7: [[T_, L]],
-        8: [[T_, L]], 9: [[T_, B]], 10: [[T_, R], [L, B]], 11: [[T_, R]], 12: [[L, R]], 13: [[B, R]], 14: [[L, B]],
-      }[c];
-      for (const [a, b] of segs) link(a, b);
-    }
-  }
-  const seen = new Set();
-  const contours = [];
-  for (const [start, node] of adj) {
-    if (seen.has(start)) continue;
-    const poly = [];
-    let prev = null, cur = start;
-    while (cur && !seen.has(cur)) {
-      seen.add(cur);
-      const nd = adj.get(cur);
-      poly.push([nd.p[0] / 2, nd.p[1] / 2]);
-      const next = nd.n.find(k => k !== prev && !seen.has(k));
-      prev = cur;
-      cur = next;
-    }
-    if (poly.length > 2) contours.push(poly);
-    void node;
-  }
-  return contours;
-}
-
-function simplifyClosed(pts, eps) {
-  const dp = (arr) => {
-    if (arr.length < 3) return arr;
-    const [ax, ay] = arr[0], [bx, by] = arr[arr.length - 1];
-    const len = Math.hypot(bx - ax, by - ay) || 1;
-    let maxD = -1, idx = 0;
-    for (let i = 1; i < arr.length - 1; i++) {
-      const d = Math.abs((bx - ax) * (ay - arr[i][1]) - (ax - arr[i][0]) * (by - ay)) / len;
-      if (d > maxD) { maxD = d; idx = i; }
-    }
-    if (maxD <= eps) return [arr[0], arr[arr.length - 1]];
-    return [...dp(arr.slice(0, idx + 1)).slice(0, -1), ...dp(arr.slice(idx))];
-  };
-  const half = Math.floor(pts.length / 2);
-  return [...dp(pts.slice(0, half + 1)).slice(0, -1), ...dp([...pts.slice(half), pts[0]]).slice(0, -1)];
-}
-
-// Chaikin-Glättung für geschlossene Linien
-function smoothClosed(pts, iterations) {
-  let cur = pts;
-  for (let it = 0; it < iterations; it++) {
-    const out = [];
-    for (let i = 0; i < cur.length; i++) {
-      const [ax, ay] = cur[i], [bx, by] = cur[(i + 1) % cur.length];
-      out.push([0.75 * ax + 0.25 * bx, 0.75 * ay + 0.25 * by], [0.25 * ax + 0.75 * bx, 0.25 * ay + 0.75 * by]);
-    }
-    cur = out;
-  }
-  return cur;
-}
-
-function otsu(values, max) {
-  const bins = 128;
-  const hist = new Float64Array(bins);
-  for (const v of values) hist[Math.min(bins - 1, Math.floor((v / (max || 1)) * bins))]++;
-  const total = values.length;
-  let sumAll = 0;
-  for (let i = 0; i < bins; i++) sumAll += i * hist[i];
-  let wB = 0, sumB = 0, best = 0, bestI = 0;
-  for (let i = 0; i < bins; i++) {
-    wB += hist[i];
-    if (!wB || wB === total) continue;
-    sumB += i * hist[i];
-    const mB = sumB / wB;
-    const mF = (sumAll - sumB) / (total - wB);
-    const between = wB * (total - wB) * (mB - mF) ** 2;
-    if (between > best) { best = between; bestI = i; }
-  }
-  return ((bestI + 1) / bins) * max;
-}
-
-function median(arr, win) {
-  const half = Math.floor(win / 2);
-  return arr.map((_, i) => {
-    const s = arr.slice(Math.max(0, i - half), i + half + 1).sort((a, b) => a - b);
-    return s[Math.floor(s.length / 2)];
-  });
-}
-
-function smooth(arr, half) {
-  return arr.map((_, i) => {
-    let s = 0, c = 0;
-    for (let j = Math.max(0, i - half); j <= Math.min(arr.length - 1, i + half); j++) { s += arr[j]; c++; }
-    return s / c;
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Markante Stellen
@@ -901,105 +213,160 @@ function crackle(W, H, seed) {
 const fmtCm = v => `${Number(v).toLocaleString('de-DE', { maximumFractionDigits: 1 })} cm`;
 const escXml = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// Ansicht aus leicht erhöhter Sicht (Parallelprojektion): Der Querschnitt bei t liegt in der
+// Zeichnung bei Y = t·cos β und erscheint als Ellipse mit den Halbachsen r und r·sin β.
+// Die Silhouette ist die Vereinigung all dieser Ellipsen.
+export function ansicht(prof, blick = BLICK) {
+  const sb = Math.sin((blick * Math.PI) / 180), cb = Math.cos((blick * Math.PI) / 180);
+  const n = prof.length;
+  let ymin = Infinity, ymax = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1), r = Math.max(0, prof[i]);
+    ymin = Math.min(ymin, t * cb - r * sb);
+    ymax = Math.max(ymax, t * cb + r * sb);
+  }
+  const rows = 600;
+  const dy = (ymax - ymin) / rows;
+  const w = new Float64Array(rows + 1).fill(-1);
+  const Y = k => ymin + k * dy;
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1), r = Math.max(0, prof[i]), yc = t * cb, b = r * sb;
+    const k0 = Math.max(0, Math.ceil((yc - b - ymin) / dy)), k1 = Math.min(rows, Math.floor((yc + b - ymin) / dy));
+    for (let k = k0; k <= k1; k++) {
+      const z = b > 1e-9 ? (Y(k) - yc) / b : 0;
+      const v = r * Math.sqrt(Math.max(0, 1 - z * z));
+      if (v > w[k]) w[k] = v;
+    }
+    if (i < n - 1) {
+      // zwischen zwei Querschnitten linear verbinden
+      const r2 = Math.max(0, prof[i + 1]), yc2 = ((i + 1) / (n - 1)) * cb;
+      for (let k = Math.ceil((yc - ymin) / dy); k <= Math.floor((yc2 - ymin) / dy); k++) {
+        const f = (Y(k) - yc) / (yc2 - yc || 1);
+        const v = r + (r2 - r) * f;
+        if (k >= 0 && k <= rows && v > w[k]) w[k] = v;
+      }
+    }
+  }
+  return { sb, cb, ymin, ymax, Y, w, rows };
+}
+
+// Henkel aus einer Blaupause: Lage und Maße (Anteile der Höhe)
+export function henkelMasse(bp) {
+  const rAt = profileAt(bp.profile);
+  const out = [];
+  // Konturen, die ganz in einer anderen liegen (das Henkelloch), gehören zu dieser
+  const box = h => [Math.min(...h.map(p => p[0])), Math.max(...h.map(p => p[0])), Math.min(...h.map(p => p[1])), Math.max(...h.map(p => p[1]))];
+  const alle = (bp.handles || []).filter(h => h.length > 3);
+  const boxes = alle.map(box);
+  const aussen = alle.filter((h, i) => !boxes.some((b, j) => j !== i && b[0] <= boxes[i][0] && b[1] >= boxes[i][1] && b[2] <= boxes[i][2] && b[3] >= boxes[i][3]));
+  for (const h of aussen) {
+    const off = h.filter(([x, t]) => t > -0.05 && t < 1.05 && Math.abs(x) - rAt(clamp(t, 0, 1)) > 0.02);
+    if (off.length < 4) continue;
+    const ts = off.map(p => p[1]);
+    out.push({
+      t0: Math.min(...ts), t1: Math.max(...ts),
+      side: Math.sign(off.reduce((a, p) => a + p[0], 0)) || 1,
+      reach: Math.max(...off.map(([x, t]) => Math.abs(x) - rAt(clamp(t, 0, 1)))),
+    });
+  }
+  return out;
+}
+
+function vereinfachen(pts, eps) {
+  if (pts.length < 3) return pts;
+  const [ax, ay] = pts[0], [bx, by] = pts[pts.length - 1];
+  const len = Math.hypot(bx - ax, by - ay) || 1;
+  let maxD = -1, idx = 0;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const d = Math.abs((bx - ax) * (ay - pts[i][1]) - (ax - pts[i][0]) * (by - ay)) / len;
+    if (d > maxD) { maxD = d; idx = i; }
+  }
+  if (maxD <= eps) return [pts[0], pts[pts.length - 1]];
+  return [...vereinfachen(pts.slice(0, idx + 1), eps).slice(0, -1), ...vereinfachen(pts.slice(idx), eps)];
+}
+
+const pfad = (pts, closed) => pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`).join('') + (closed ? 'Z' : '');
+
 /**
- * bp: { profile, points }
+ * bp: { profile, points, handles }
  * values/pos: eingetragene Maße je Stelle (cm)
  */
 export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = [], interactive = true, seed = 1 } = {}) {
   const uid = `bp${++svgCounter}`;
   const prof = bp.profile;
-  const n = prof.length;
-  const rmax = Math.max(...prof, 0.02);
   const W = 400;
   const rAt = profileAt(prof);
-  const sil = bp.silhouette;
-  const ell = sil ? Math.max(0.04, bp.tilt ?? ELLIPSE) : ELLIPSE;
+  const v = ansicht(prof);
+  const { sb, cb } = v;
 
-  // Ältere Blaupausen ohne Ausschnitt: Anbauten links zeichnen
-  const rawAtt = sil ? [] : bp.attachments || [];
-  const flip = rawAtt.length && rawAtt.every(a => a.side === 'right') ? -1 : 1;
-  const atts = rawAtt.map(a => ({ ...a, lines: a.lines.map(l => l.map(([x, t]) => [x * flip, t])) }));
-
-  // Henkel im Ausschnitt finden: Teile der Außenkontur, die deutlich über den Körper hinausragen
-  let handle = null;
-  if (sil?.outlines.length) {
-    const outer = sil.outlines.reduce((a, b) => (b.length > a.length ? b : a));
-    const off = outer.filter(([x, t]) => t > -0.05 && t < 1.05 && Math.abs(x) - rAt(Math.max(0, Math.min(1, t))) > 0.05);
-    if (off.length >= 8) {
-      const ts = off.map(p => p[1]);
-      const t0 = Math.min(...ts), t1 = Math.max(...ts);
-      if (t1 - t0 > 0.1) {
-        const side = Math.sign(off.reduce((a, p) => a + p[0], 0)) || 1;
-        handle = { t0, t1, side, reach: Math.max(...off.map(([x, t]) => Math.abs(x) - rAt(Math.max(0, Math.min(1, t))))) };
-      }
-    }
-  }
+  const handles = (bp.handles || []).filter(h => h.length > 3);
+  const hm = henkelMasse(bp);
   // Beschriftung auf die Seite ohne Henkel, Höhenmaß auf die andere
-  const side = handle?.side > 0 ? -1 : 1;
+  const side = hm[0]?.side > 0 ? -1 : 1;
 
-  const ext = sil ? [...sil.outlines.flat(), ...sil.inner.flat()] : atts.flatMap(a => a.lines.flat());
-  const extL = Math.max(rmax, ...ext.map(p => -p[0]));
-  const extR = Math.max(rmax, ...ext.map(p => p[0]));
-  const minT = Math.min(0, ...ext.map(p => p[1]));
-  const maxT = Math.max(1, ...ext.map(p => p[1]));
+  // Ausdehnung in Höhen-Einheiten
+  let extL = 0, extR = 0;
+  for (let k = 0; k <= v.rows; k++) if (v.w[k] > 0) { extL = Math.max(extL, v.w[k]); extR = extL; }
+  let yMin = v.ymin, yMax = v.ymax;
+  for (const h of handles) for (const [x, t] of h) {
+    extL = Math.max(extL, -x); extR = Math.max(extR, x);
+    yMin = Math.min(yMin, t * cb); yMax = Math.max(yMax, t * cb);
+  }
 
-  const Hd = Math.min(340, 184 / (extL + extR));
-  const half = rmax * Hd;
+  const Hd = Math.min(330 / (yMax - yMin), 184 / Math.max(0.2, extL + extR));
   const titleLines = wrap(title, 22).slice(0, 2);
   const titleH = titleLines.length ? 30 + titleLines.length * 26 : 24;
-  const top = titleH + Math.max(prof[0] * Hd * ell, -minT * Hd) + 22;
-  const bottom = top + Hd;
+  const top = titleH + -yMin * Hd + 22; // Mitte der Öffnung
+  const bottom = top + cb * Hd; // Mitte des Bodens
   const axis = (side > 0 ? 64 : 152) + extL * Hd;
   const labelX = side > 0 ? Math.min(axis + extR * Hd + 34, W - 118) : Math.max(axis - extL * Hd - 34, 118);
   const hx = side > 0 ? axis - extL * Hd - 30 : axis + extR * Hd + 30;
   const est = estimate(bp, values, pos);
 
   const points = effectivePoints(bp);
-  const yOf = t => top + t * Hd;
-  const X = x => (axis + x * Hd).toFixed(1);
-  const Yt = t => yOf(t).toFixed(1);
-  const arc = (t, front) => {
-    const rx = rAt(t) * Hd;
-    const ry = rx * ell;
-    const y = yOf(t);
+  const yOf = t => top + t * cb * Hd;
+  const arc = (t, front, r = rAt(t)) => {
+    const rx = r * Hd, ry = rx * sb, y = yOf(t);
     return `M${(axis - rx).toFixed(1)} ${y.toFixed(1)}A${rx.toFixed(1)} ${ry.toFixed(1)} 0 0 ${front ? 0 : 1} ${(axis + rx).toFixed(1)} ${y.toFixed(1)}`;
   };
+  const ellipse = (t, r) => `M${(axis - r * Hd).toFixed(1)} ${yOf(t).toFixed(1)}a${(r * Hd).toFixed(1)} ${(r * Hd * sb).toFixed(1)} 0 1 0 ${(2 * r * Hd).toFixed(1)} 0a${(r * Hd).toFixed(1)} ${(r * Hd * sb).toFixed(1)} 0 1 0 ${(-2 * r * Hd).toFixed(1)} 0Z`;
 
-  const interior = points.filter(p => p.t != null && p.t > 0 && p.t < 1);
-  let shape = '';
-  if (sil) {
-    // Ausschnitt wie fotografiert: Außenkontur, Löcher, Linien im Stück
-    for (const o of sil.outlines) shape += `<path d="${o.map(([x, t], i) => `${i ? 'L' : 'M'}${X(x)} ${Yt(t)}`).join('')}Z"/>`;
-    for (const l of sil.inner) shape += `<path d="${l.map(([x, t], i) => `${i ? 'L' : 'M'}${X(x)} ${Yt(t)}`).join('')}" class="inner"/>`;
-    shape += `<path d="${arc(0, true)}"/>`;
-    shape += `<path d="${arc(1, false)}" class="dash"/>`;
-  } else {
-    const contour = sgn => prof.map((r, i) => `${i ? 'L' : 'M'}${(axis + sgn * r * Hd).toFixed(1)} ${yOf(i / (n - 1)).toFixed(1)}`).join('');
-    shape += `<path d="${contour(-1)}"/><path d="${contour(1)}"/>`;
-    shape += `<ellipse cx="${axis}" cy="${top}" rx="${(prof[0] * Hd).toFixed(1)}" ry="${(prof[0] * Hd * ell).toFixed(1)}"/>`;
-    shape += `<path d="${arc(1, true)}"/><path d="${arc(1, false)}" class="dash"/>`;
-    for (const a of atts) for (const l of a.lines) shape += `<path d="${l.map(([x, t], i) => `${i ? 'L' : 'M'}${X(x)} ${Yt(t)}`).join('')}"/>`;
+  // Umriss: rechts von oben nach unten, links zurück
+  const rechts = [], links = [];
+  for (let k = 0; k <= v.rows; k++) {
+    if (v.w[k] < 0) continue;
+    const y = top + v.Y(k) * Hd;
+    rechts.push([axis + v.w[k] * Hd, y]);
+    links.push([axis - v.w[k] * Hd, y]);
   }
+  const umriss = [...vereinfachen(rechts, 0.25), ...vereinfachen(links.reverse(), 0.25)];
+  const umrissPfad = pfad(umriss, true);
+
+  const r0 = rAt(0), rI = Math.max(0, r0 - Math.max(0.018, 0.07 * r0));
+  const interior = points.filter(p => p.t != null && p.t > 0 && p.t < 1);
+  let shape = `<path d="${umrissPfad}" class="koerper"/>`;
+  shape += `<path d="${ellipse(0, rI)}" class="oeffnung"/>`;
+  shape += `<path d="${umrissPfad}"/>`;
+  shape += `<path d="${ellipse(0, r0)}"/>`;
+  shape += `<path d="${ellipse(0, rI)}" class="thin"/>`;
+  shape += `<path d="${arc(1, false)}" class="dash"/>`;
   for (const p of interior) shape += `<path d="${arc(p.t, true)}" class="thin"/><path d="${arc(p.t, false)}" class="dash"/>`;
+  // Henkel liegen seitlich in der Bildebene; was hinter dem Körper liegt, ist verdeckt
+  let henkel = '';
+  for (const h of handles) henkel += `<path d="${pfad(h.map(([x, t]) => [axis + x * Hd, yOf(t)]), true)}"/>`;
+  if (henkel) shape += `<g mask="url(#${uid}-hm)">${henkel}</g>`;
 
   // Henkelmaße als Text: Ansatzhöhen und wie weit er absteht
-  const handles = handle ? [{ ...handle, name: 'Henkel' }] : atts.map((a, i) => {
-    const pts = a.lines.flat();
-    return {
-      t0: Math.min(...pts.map(p => p[1])), t1: Math.max(...pts.map(p => p[1])),
-      reach: Math.max(0, ...pts.map(([x, t]) => Math.abs(x) - rAt(Math.max(0, Math.min(1, t))))),
-      name: a.label || (atts.length > 1 ? `Anbau ${i + 1}` : 'Henkel'),
-    };
-  });
   const attInfo = [];
-  for (const a of handles) {
+  hm.forEach((a, i) => {
+    const name = hm.length > 1 ? `Henkel ${i + 1}` : 'Henkel';
     if (est.scale) {
-      attInfo.push(`${a.name}: ≈ ${fmtCm((a.t1 - a.t0) * est.scale)} hoch, steht ≈ ${fmtCm(a.reach * est.scale)} ab`);
+      attInfo.push(`${name}: ≈ ${fmtCm((a.t1 - a.t0) * est.scale)} hoch, steht ≈ ${fmtCm(a.reach * est.scale)} ab`);
       attInfo.push(`ansetzen auf ≈ ${fmtCm(Math.max(0, 1 - a.t1) * est.scale)} und ≈ ${fmtCm(Math.max(0, 1 - a.t0) * est.scale)} Höhe`);
     } else {
-      attInfo.push(`${a.name}: ${Math.round((a.t1 - a.t0) * 100)} % der Höhe, steht ${Math.round(a.reach * 100)} % ab`);
+      attInfo.push(`${name}: ${Math.round((a.t1 - a.t0) * 100)} % der Höhe, steht ${Math.round(a.reach * 100)} % ab`);
     }
-  }
+  });
   info = [...info, ...attInfo];
 
   // Beschriftungen ohne Überlappung
@@ -1027,7 +394,7 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
   const anchor = side > 0 ? '' : ' text-anchor="end"';
   let labels = '';
   for (const { p, yA, xA, yL } of items) {
-    const v = valueText(p);
+    const vt = valueText(p);
     const ps = posText(p);
     labels += `<path d="M${(xA + side * 4).toFixed(1)} ${yA.toFixed(1)}L${labelX - side * 22} ${yA.toFixed(1)}L${labelX - side * 8} ${yL.toFixed(1)}" class="lead"/>`;
     labels += `<circle cx="${xA.toFixed(1)}" cy="${yA.toFixed(1)}" r="3" class="dot"/>`;
@@ -1035,15 +402,15 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
     const rw = side > 0 ? W - labelX + 6 : labelX + 6;
     labels += `<g class="lbl"${btn(p.key)}><rect x="${rx}" y="${(yL - 19).toFixed(1)}" width="${rw}" height="44" rx="8" class="hit"/>
       <text x="${labelX}" y="${(yL - 4).toFixed(1)}" class="name"${anchor}>${escXml(p.label)}</text>
-      <text x="${labelX}" y="${(yL + 12).toFixed(1)}" class="${v.cls}"${anchor}>${escXml(v.text)}</text>
+      <text x="${labelX}" y="${(yL + 12).toFixed(1)}" class="${vt.cls}"${anchor}>${escXml(vt.text)}</text>
       ${ps ? `<text x="${labelX}" y="${(yL + 24).toFixed(1)}" class="pos"${anchor}>${escXml(ps)}</text>` : ''}</g>`;
   }
 
-  // Höhenmaß auf der anderen Seite
+  // Höhenmaß auf der anderen Seite (von der Ebene der Öffnung bis zur Standfläche)
   const hp = points.find(p => p.key === 'hoehe');
   let height = '';
   if (hp) {
-    const v = valueText(hp);
+    const vt = valueText(hp);
     const mid = (top + bottom) / 2;
     height += `<path d="M${hx} ${top}V${bottom}M${hx - 6} ${top}h12M${hx - 6} ${bottom}h12M${hx - 4} ${top + 7}l4 -7l4 7M${hx - 4} ${bottom - 7}l4 7l4 -7" class="dim"/>`;
     for (const p of interior) {
@@ -1053,24 +420,26 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
     }
     const tx = side > 0 ? hx - 12 : hx + 22;
     height += `<g class="lbl"${btn('hoehe')}><rect x="${tx - 22}" y="${mid - 80}" width="30" height="160" rx="8" class="hit"/>
-      <text transform="translate(${tx} ${mid}) rotate(-90)" text-anchor="middle" class="${v.cls}">Höhe ${escXml(v.text)}</text></g>`;
+      <text transform="translate(${tx} ${mid}) rotate(-90)" text-anchor="middle" class="${vt.cls}">Höhe ${escXml(vt.text)}</text></g>`;
   }
 
   const lastLabel = items.length ? items[items.length - 1].yL + 34 : 0;
-  const infoTop = Math.max(Math.max(bottom + rAt(1) * Hd * ell, top + maxT * Hd) + 40, lastLabel + 16);
+  const infoTop = Math.max(top + yMax * Hd + 40, lastLabel + 16);
   const infoSvg = info.map((line, i) => `<text x="22" y="${infoTop + i * 21}" class="info${i ? '' : ' strong'}">${escXml(line)}</text>`).join('');
   const H = Math.ceil(infoTop + Math.max(0, info.length - 1) * 21 + 26);
 
   const cr = crackle(W, H, seed);
   const titleSvg = titleLines.map((l, i) => `<text x="${W - 20}" y="${40 + i * 26}" text-anchor="end" class="title">${escXml(l)}</text>`).join('');
+  const half = Math.max(extL, extR) * Hd;
 
   return `<svg class="blueprint" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Blaupause ${escXml(title)}">
   <style>
     #${uid} text { font-family: "Avenir Next", Futura, "Century Gothic", -apple-system, "Segoe UI", sans-serif; fill: ${INK}; }
-    #${uid} .shape path, #${uid} .shape ellipse { fill: none; stroke: ${LINE}; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
-    #${uid} .shape .thin { stroke-width: 1.6; opacity: .8; }
-    #${uid} .shape .inner { stroke-width: 1.8; opacity: .9; }
-    #${uid} .shape .dash { stroke-dasharray: 7 6; stroke-width: 2.2; }
+    #${uid} .shape path { fill: none; stroke: ${LINE}; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+    #${uid} .shape .koerper { fill: #fff; fill-opacity: .1; stroke: none; }
+    #${uid} .shape .oeffnung { fill: ${INK}; fill-opacity: .09; stroke: none; }
+    #${uid} .shape .thin { stroke-width: 1.5; opacity: .8; }
+    #${uid} .shape .dash { stroke-dasharray: 7 6; stroke-width: 2; }
     #${uid} .lead { fill: none; stroke: ${INK}; stroke-width: 1; opacity: .5; }
     #${uid} .dot { fill: ${INK}; }
     #${uid} .dim { fill: none; stroke: ${INK}; stroke-width: 1.2; opacity: .7; stroke-linecap: round; stroke-linejoin: round; }
@@ -1093,6 +462,10 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
       <feTurbulence type="fractalNoise" baseFrequency="0.018" numOctaves="3" seed="${seed % 97}"/>
       <feColorMatrix values="0 0 0 0 0.33  0 0 0 0 0.47  0 0 0 0 0.43  1.3 0 0 0 -0.55"/>
     </filter>
+    <mask id="${uid}-hm" maskUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}">
+      <rect width="${W}" height="${H}" fill="#fff"/>
+      <path d="${umrissPfad}" fill="#000"/>
+    </mask>
   </defs>
   <clipPath id="${uid}-c"><rect width="${W}" height="${H}"/></clipPath>
   <g id="${uid}" clip-path="url(#${uid}-c)">
@@ -1102,7 +475,7 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
     <path d="${cr.fine}" fill="none" stroke="#8ea89f" stroke-width=".6" opacity=".45"/>
     ${titleSvg}
     <g class="shape">${shape}</g>
-    ${interactive ? `<rect x="${(axis - half - 8).toFixed(1)}" y="${(top - 6).toFixed(1)}" width="${(2 * half + 16).toFixed(1)}" height="${(Hd + 12).toFixed(1)}" class="hit add" data-bp-add data-top="${top.toFixed(2)}" data-hd="${Hd.toFixed(2)}"/>` : ''}
+    ${interactive ? `<rect x="${(axis - half - 8).toFixed(1)}" y="${(top - 6).toFixed(1)}" width="${(2 * half + 16).toFixed(1)}" height="${(cb * Hd + 12).toFixed(1)}" class="hit add" data-bp-add data-top="${top.toFixed(2)}" data-hd="${(cb * Hd).toFixed(2)}"/>` : ''}
     ${height}
     ${labels}
     ${infoSvg}

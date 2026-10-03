@@ -624,3 +624,74 @@ dialog.sheet::backdrop { background: rgba(30, 20, 10, .45); }
 dialog.sheet h2 { margin: 0 0 14px; font-size: 1.15rem; }
 .sheet-buttons { display: flex; flex-direction: row-reverse; gap: 10px; margin: 4px 0 12px; }
 .sheet-buttons .btn { flex: 1; }
+
+/* ---------- Geführte Aufnahme ---------- */
+.photo-picker .pp-add.pp-guided { border-style: solid; background: var(--accent); color: var(--accent-text); }
+.bp-choice .bp-neu {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  border: 1.5px dashed var(--accent); background: var(--accent-soft); color: var(--accent);
+  font-size: .72rem; font-weight: 600;
+}
+.bp-choice .bp-neu svg { width: 26px; height: 26px; }
+body.kamera-offen { overflow: hidden; }
+.kamera {
+  position: fixed; inset: 0; z-index: 100;
+  background: #000; color: #fff;
+  overflow: hidden;
+  touch-action: none;
+}
+.kamera video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.kamera-maske { position: absolute; inset: 0; pointer-events: none; }
+.kamera-oben {
+  position: absolute; top: 0; left: 0; right: 0;
+  display: flex; align-items: center; gap: 8px;
+  padding: calc(env(safe-area-inset-top) + 10px) 12px 10px;
+  background: linear-gradient(rgba(0,0,0,.55), transparent);
+}
+.kamera-zu {
+  flex: 0 0 40px; height: 40px; border: 0; border-radius: 50%;
+  background: rgba(0,0,0,.45); color: #fff; font-size: 1.6rem; line-height: 1; cursor: pointer;
+}
+.kamera-chips { display: flex; gap: 6px; overflow-x: auto; }
+.kamera-chips button {
+  flex: 0 0 auto; padding: 7px 12px; border-radius: 999px;
+  border: 1.5px solid rgba(255,255,255,.6); background: rgba(0,0,0,.35); color: #fff;
+  font-size: .85rem; font-weight: 600; cursor: pointer;
+}
+.kamera-chips button[aria-checked="true"] { background: #fff; color: #222; border-color: #fff; }
+.kamera-hinweis {
+  position: absolute; left: 50%; top: calc(env(safe-area-inset-top) + 64px); transform: translateX(-50%);
+  max-width: calc(100% - 32px);
+  padding: 8px 14px; border-radius: 999px;
+  background: rgba(0,0,0,.6); color: #ffcf5a;
+  font-size: .92rem; font-weight: 600; text-align: center;
+}
+.kamera-hinweis.gut { color: #7cf29a; }
+.kamera-hinweis:empty { display: none; }
+.kamera-unten {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 24px calc(env(safe-area-inset-bottom) + 20px);
+  background: linear-gradient(transparent, rgba(0,0,0,.6));
+}
+.kamera-unten > button:not(.kamera-ausloeser) {
+  width: 64px; height: 44px; border: 0; border-radius: 22px;
+  background: rgba(0,0,0,.45); color: #fff; font-weight: 600; cursor: pointer;
+}
+.kamera-unten > button:empty { visibility: hidden; }
+.kamera-ausloeser {
+  width: 76px; height: 76px; border-radius: 50%;
+  border: 4px solid #fff; background: transparent; padding: 5px; cursor: pointer;
+}
+.kamera-ausloeser span { display: block; width: 100%; height: 100%; border-radius: 50%; background: #fff; }
+.kamera-ausloeser:active span { transform: scale(.92); }
+.kamera-tipps {
+  position: absolute; left: 16px; right: 16px; bottom: calc(env(safe-area-inset-bottom) + 120px);
+  padding: 16px 18px; border-radius: 16px;
+  background: var(--surface); color: var(--text);
+  box-shadow: 0 8px 30px rgba(0,0,0,.4);
+}
+.kamera-tipps h3 { margin: 0 0 8px; font-size: 1rem; }
+.kamera-tipps ul { margin: 0 0 12px; padding-left: 18px; font-size: .9rem; }
+.kamera-tipps li { margin-bottom: 4px; }
+.kamera-tipps .btn { width: 100%; }

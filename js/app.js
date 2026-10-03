@@ -1,6 +1,8 @@
 import * as db from './db.js';
-import { processImage, blobToDataUrl, dataUrlToBlob } from './image.js';
-import { analyze, findPoints, estimate, effectivePoints, renderBlueprint, loadForAnalysis, hashSeed, DEFAULT_CROP, DEFAULT_SENS } from './blueprint.js';
+import { processImage, blobToDataUrl, dataUrlToBlob, brennweiteAusExif } from './image.js';
+import { findPoints, estimate, effectivePoints, renderBlueprint, hashSeed } from './blueprint.js';
+import { analyze, loadForAnalysis, cropFromGuide, DEFAULT_SENS } from './erkennung.js';
+import { gefuehrteAufnahme, kameraVerfuegbar, GRUPPEN } from './kamera.js';
 
 // ---------------------------------------------------------------------------
 // Fachliche Listen
@@ -96,6 +98,7 @@ function setHeader({ title, back = null, actions = '' }) {
 }
 
 const ICON_PLUS = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>';
+const ICON_GUIDE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M9.5 7.5h5M10 7.5c0 2-1.8 3-1.8 6a3.8 3.8 0 0 0 7.6 0c0-3-1.8-4-1.8-6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="2.5 2"/><path d="M12 5v14" stroke="currentColor" stroke-width="1" stroke-dasharray="1 2"/></svg>';
 const ICON_CAMERA = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-2.5h6L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>';
 
 // ---------------------------------------------------------------------------
@@ -141,11 +144,26 @@ async function hydratePhotos(root = $app) {
   }));
 }
 
-async function savePhotoFromFile(file) {
+// kamera: Aufnahmedaten für die Formerkennung (Neigung, Brennweite, Maske) – bei Fotos aus
+// der Galerie wenigstens die Brennweite aus den EXIF-Daten
+async function savePhotoFromFile(file, kamera = null) {
   const { blob, thumb: t } = await processImage(file);
+  if (!kamera) {
+    const f35 = await brennweiteAusExif(file);
+    if (f35) kamera = { brennweite35: f35 };
+  }
   const id = db.newId();
-  await db.put('photos', { id, blob, thumb: t, createdAt: new Date().toISOString() });
+  await db.put('photos', { id, blob, thumb: t, createdAt: new Date().toISOString(), ...(kamera ? { kamera } : {}) });
   return id;
+}
+
+// Geführte Aufnahme für die Blaupause; liefert die Foto-ID oder null
+async function blaupausenFoto({ gruppe, galerie } = {}) {
+  const res = await gefuehrteAufnahme({ gruppe, galerie });
+  if (!res) return null;
+  if (res.fehler) { toast(res.fehler); return null; }
+  toast('Foto wird verarbeitet …');
+  return savePhotoFromFile(res.blob, res.meta);
 }
 
 // Vollbildansicht
@@ -238,6 +256,7 @@ function mountMultiPhoto(container, ids, session) {
   const render = () => {
     container.innerHTML = `<div class="photo-picker">
       ${ids.map(id => `<div class="pp-item">${thumb(id, { zoom: true })}<button type="button" class="pp-remove" data-id="${id}" aria-label="Foto entfernen">×</button></div>`).join('')}
+      ${kameraVerfuegbar() ? `<button type="button" class="pp-add pp-guided" data-pick="guided">${ICON_GUIDE}Foto für<br>Blaupause</button>` : ''}
       <button type="button" class="pp-add" data-pick="cam">${ICON_CAMERA}Foto<br>aufnehmen</button>
       <button type="button" class="pp-add" data-pick="lib">${ICON_PLUS}Aus<br>Galerie</button>
       ${fileInputs('pp', true)}
@@ -254,7 +273,14 @@ function mountMultiPhoto(container, ids, session) {
       return;
     }
     const pick = e.target.closest('[data-pick]');
-    if (pick) container.querySelector(pick.dataset.pick === 'cam' ? '.pp-cam' : '.pp-lib').click();
+    if (pick?.dataset.pick === 'guided') {
+      blaupausenFoto({ galerie: () => container.querySelector('.pp-lib').click() }).then(id => {
+        if (!id) return;
+        ids.unshift(id); // das Blaupausen-Foto zuerst
+        session.add(id);
+        render();
+      });
+    } else if (pick) container.querySelector(pick.dataset.pick === 'cam' ? '.pp-cam' : '.pp-lib').click();
   });
   container.addEventListener('change', e => {
     if (e.target.type === 'file') handleFiles(e.target, id => { ids.push(id); session.add(id); render(); });
@@ -367,8 +393,8 @@ function shrink(nass, fertig) {
 async function viewPiece(id) {
   const p = await db.get('pieces', id);
   if (!p) return notFound();
-  // Ältere Blaupausen (ohne Ausschnitt aus dem Foto) einmalig neu berechnen
-  if (p.blueprint && !p.blueprint.silhouette && p.photos?.includes(p.blueprint.photoId)) {
+  // Ältere Blaupausen einmalig mit der neuen Formerkennung neu berechnen
+  if (p.blueprint && p.blueprint.version !== 2 && p.photos?.includes(p.blueprint.photoId)) {
     try {
       p.blueprint = await createBlueprint(p.blueprint.photoId, p.blueprint);
       await db.put('pieces', p);
@@ -396,7 +422,7 @@ async function viewPiece(id) {
       </div>`
     : p.photos?.length ? `<div class="card">
         <h2>Blaupause</h2>
-        <p class="small muted" style="margin-top:0">Aus einem Foto deines Stücks (genau von der Seite) zeichnet die App eine Blaupause mit allen wichtigen Maßen.</p>
+        <p class="small muted" style="margin-top:0">Aus einem Foto deines Stücks (frontal, Kamera auf halber Höhe) zeichnet die App eine Blaupause mit allen wichtigen Maßen.</p>
         <a class="btn small primary" href="#/werkstueck/${id}/umriss" style="margin-bottom:6px">Blaupause erstellen</a>
       </div>` : ''}
 
@@ -556,10 +582,11 @@ async function viewPieceForm(id, params) {
       updatedAt: now,
     };
     if (!obj.name) obj.name = obj.tonsorte ? `Stück aus ${obj.tonsorte}` : 'Werkstück';
-    // Neues Foto → Form automatisch erkennen und Blaupause zeichnen
-    if (photos.length && !photos.includes(obj.blueprint?.photoId)) {
+    // Neues (Blaupausen-)Foto → Form automatisch erkennen und Blaupause zeichnen
+    const bpFoto = photos.length ? await blaupausenFotoWaehlen(photos, obj.blueprint?.photoId) : null;
+    if (bpFoto && bpFoto !== obj.blueprint?.photoId) {
       toast('Form wird erkannt …');
-      try { obj.blueprint = await createBlueprint(photos[0], obj.blueprint); } catch (err) { console.warn('Blaupause:', err.message); }
+      try { obj.blueprint = await createBlueprint(bpFoto, obj.blueprint); } catch (err) { console.warn('Blaupause:', err.message); }
     }
     await db.put('pieces', obj);
     await session.commit();
@@ -593,16 +620,19 @@ function bpInfo(p) {
 // preview: frisches Analyse-Ergebnis (im Umriss-Editor), sonst die gespeicherte Blaupause
 function blueprintSvg(p, preview, interactive) {
   const bp = preview
-    ? { ...(p.blueprint || {}), profile: preview.profile, points: findPoints(preview.profile), silhouette: preview.silhouette, tilt: preview.tilt, attachments: [] }
+    ? { ...(p.blueprint || {}), profile: preview.profile, points: findPoints(preview.profile), handles: preview.handles }
     : p.blueprint;
   return renderBlueprint(bp, { ...bpData(p), title: p.name, info: bpInfo(p), interactive, seed: hashSeed(p.id || p.name) });
 }
 
-function makeBlueprint(photoId, crop, sens, result, prev, brush = []) {
+function makeBlueprint(photoId, crop, sens, result, prev, brush = [], gruppe = null) {
   return {
-    photoId, crop, sens, brush,
+    version: 2,
+    photoId, crop, sens, brush, gruppe,
     profile: result.profile,
-    silhouette: result.silhouette,
+    handles: result.handles,
+    form: result.form,
+    quality: result.quality,
     tilt: result.tilt,
     points: findPoints(result.profile),
     values: prev?.values || {},
@@ -613,17 +643,37 @@ function makeBlueprint(photoId, crop, sens, result, prev, brush = []) {
   };
 }
 
+// Hinweise an die Formerkennung aus den Aufnahmedaten des Fotos
+function erkennungsHinweis(photo, src, gruppe) {
+  const k = photo?.kamera || {};
+  let brennweite = k.brennweite;
+  if (!brennweite && k.brennweite35) {
+    const lang = Math.max(src.width, src.height), kurz = Math.min(src.width, src.height);
+    brennweite = (k.brennweite35 / 43.27) * Math.hypot(1, kurz / lang);
+  }
+  return { blick: Number.isFinite(k.blick) ? k.blick : undefined, brennweite, guide: k.guide, gruppe: gruppe || k.gruppe || undefined };
+}
+
+// Für die Blaupause bevorzugt ein geführt aufgenommenes Foto
+async function blaupausenFotoWaehlen(photoIds, aktuell) {
+  const meta = await Promise.all(photoIds.map(id => db.get('photos', id)));
+  const gefuehrt = photoIds.filter((id, i) => meta[i]?.kamera?.gefuehrt);
+  if (aktuell && photoIds.includes(aktuell) && (gefuehrt.includes(aktuell) || !gefuehrt.length)) return aktuell;
+  return gefuehrt[0] || photoIds[0];
+}
+
 // Neu berechnen; bei derselben Aufnahme bleiben Rahmen, Empfindlichkeit und Korrekturen erhalten
 async function createBlueprint(photoId, prev) {
   const photo = await db.get('photos', photoId);
   if (!photo) throw new Error('Foto nicht gefunden');
   const src = await loadForAnalysis(photo.blob);
   const same = prev?.photoId === photoId;
-  const crop = same && prev.crop ? prev.crop : { ...DEFAULT_CROP };
+  const gruppe = same ? prev.gruppe || null : null;
+  const crop = same && prev.crop ? prev.crop : cropFromGuide(photo.kamera?.guide);
   const sens = same ? prev.sens ?? DEFAULT_SENS : DEFAULT_SENS;
   const brush = same ? prev.brush || [] : [];
-  const result = analyze(src, { crop, sens, brush });
-  return makeBlueprint(photoId, crop, sens, result, prev, brush);
+  const result = analyze(src, { crop, sens, brush, hint: erkennungsHinweis(photo, src, gruppe) });
+  return makeBlueprint(photoId, crop, sens, result, prev, brush, gruppe);
 }
 
 function measureDialog({ title, isHeight, value, est, showPos, pos, posEst, label, removeText }) {
@@ -757,26 +807,44 @@ async function viewBlueprintEditor(id) {
   const p = await db.get('pieces', id);
   if (!p) return notFound();
   setHeader({ title: 'Umriss erkennen', back: `#/werkstueck/${id}` });
+  const neuesFoto = async () => {
+    const fid = await blaupausenFoto({ galerie: null });
+    if (!fid) return null;
+    p.photos = [fid, ...(p.photos || [])];
+    p.updatedAt = new Date().toISOString();
+    await db.put('pieces', p);
+    return fid;
+  };
   if (!p.photos?.length) {
-    $app.innerHTML = `<div class="empty"><p>Füge dem Werkstück zuerst ein Foto hinzu – am besten genau von der Seite.</p>
-      <a class="btn primary" href="#/werkstueck/${id}/bearbeiten">Foto hinzufügen</a></div>`;
+    $app.innerHTML = `<div class="empty"><p>Fotografiere dein Stück für die Blaupause: frontal, Kamera auf halber Höhe des Stücks. Eine Maske hilft dir dabei.</p>
+      ${kameraVerfuegbar() ? '<button type="button" class="btn primary" id="bp-foto">Foto für Blaupause aufnehmen</button>' : ''}
+      <a class="btn" href="#/werkstueck/${id}/bearbeiten">Foto hinzufügen</a></div>`;
+    $app.querySelector('#bp-foto')?.addEventListener('click', async () => { if (await neuesFoto()) router(); });
     return;
   }
   const prev = p.blueprint;
+  const gleich = prev && p.photos.includes(prev.photoId);
   const st = {
-    photoId: prev && p.photos.includes(prev.photoId) ? prev.photoId : p.photos[0],
-    crop: { ...(prev?.crop || DEFAULT_CROP) },
+    photoId: gleich ? prev.photoId : await blaupausenFotoWaehlen(p.photos, null),
+    crop: gleich && prev.crop ? { ...prev.crop } : null,
     sens: prev?.sens ?? DEFAULT_SENS,
-    brush: prev && p.photos.includes(prev.photoId) ? structuredClone(prev.brush || []) : [],
+    brush: gleich ? structuredClone(prev.brush || []) : [],
+    gruppe: gleich ? prev.gruppe || null : null,
     mode: 'rahmen',
     brushSize: 5,
     src: null,
+    photo: null,
     result: null,
   };
 
   $app.innerHTML = `
-    <div class="info-box"><p>Die App schneidet dein Stück aus dem Foto aus (orange) und zeichnet genau diesen Ausschnitt als Blaupause. Fehlt etwas, male es mit <strong>Hinzufügen</strong> dazu; Schatten o. Ä. nimmst du mit <strong>Entfernen</strong> weg.</p></div>
-    ${p.photos.length > 1 ? `<div class="bp-choice">${p.photos.map(ph => `<button type="button" data-photo-id="${ph}" class="${ph === st.photoId ? 'active' : ''}" aria-label="Dieses Foto verwenden">${thumb(ph)}</button>`).join('')}</div>` : ''}
+    <div class="info-box"><p>Orange ist der erkannte Umriss, die gestrichelte Linie die Mittellinie. Die besser belichtete Seite (<strong>Leitseite</strong>) gibt die Form vor; blau markierte Stellen hat die App aus ihrem Formwissen ergänzt. Fehlt etwas (z. B. ein Henkel), male es mit <strong>Hinzufügen</strong> dazu; Schatten nimmst du mit <strong>Entfernen</strong> weg.</p></div>
+    <div class="bp-choice">${p.photos.map(ph => `<button type="button" data-photo-id="${ph}" class="${ph === st.photoId ? 'active' : ''}" aria-label="Dieses Foto verwenden">${thumb(ph)}</button>`).join('')}
+      ${kameraVerfuegbar() ? `<button type="button" class="bp-neu" id="bp-foto" aria-label="Neues Foto für die Blaupause aufnehmen">${ICON_GUIDE}<span>Neues Foto</span></button>` : ''}</div>
+    <label class="field"><span>Art des Stücks</span><select id="bp-gruppe">
+      <option value="">Automatisch erkennen</option>
+      ${GRUPPEN.map(g => `<option value="${g.key}" ${st.gruppe === g.key ? 'selected' : ''}>${esc(g.label)}</option>`).join('')}
+    </select></label>
     <div class="segmented" id="bp-mode" role="radiogroup" aria-label="Werkzeug">
       <label><input type="radio" name="bpmode" value="rahmen" checked><span class="none">Rahmen</span></label>
       <label><input type="radio" name="bpmode" value="pinsel"><span class="none">Hinzufügen</span></label>
@@ -843,22 +911,39 @@ async function viewBlueprintEditor(id) {
     ctx.strokeRect(c.x0 * w, c.y0 * h, (c.x1 - c.x0) * w, (c.y1 - c.y0) * h);
     const o = st.result?.outline;
     if (o) {
+      const linie = (pts, closed) => {
+        ctx.beginPath();
+        pts.forEach(([x, y], i) => (i ? ctx.lineTo(x * w, y * h) : ctx.moveTo(x * w, y * h)));
+        if (closed) ctx.closePath();
+        ctx.stroke();
+      };
+      ctx.lineJoin = 'round';
+      // gemessene Kanten der Leitseite (dünn, weiß)
+      ctx.strokeStyle = 'rgba(255,255,255,.75)';
+      ctx.lineWidth = 1.5;
+      linie(o.leit === 'links' ? o.links : o.rechts, false);
       ctx.strokeStyle = '#ff7a3d';
       ctx.lineWidth = 3;
-      ctx.lineJoin = 'round';
-      for (const line of o.silhouette || []) {
-        ctx.beginPath();
-        line.forEach(([x, y], i) => (i ? ctx.lineTo(x * w, y * h) : ctx.moveTo(x * w, y * h)));
-        ctx.closePath();
-        ctx.stroke();
+      linie(o.koerper, true);
+      ctx.strokeStyle = '#ff3d6e';
+      for (const hk of o.henkel) linie(hk, true);
+      // aus dem Formwissen ergänzt
+      ctx.strokeStyle = '#3aa0ff';
+      ctx.lineWidth = 5;
+      ctx.lineCap = 'round';
+      for (const [ya, yb] of o.ergaenzt) {
+        for (const pts of [o.koerper]) {
+          const seg = pts.filter(([, y]) => y >= ya && y <= yb);
+          const l = seg.filter(([x]) => x < o.achse[0][0]), r = seg.filter(([x]) => x >= o.achse[0][0]);
+          if (l.length > 1) linie(l, false);
+          if (r.length > 1) linie(r, false);
+        }
       }
+      ctx.lineCap = 'butt';
       ctx.setLineDash([6, 6]);
       ctx.lineWidth = 1.5;
       ctx.strokeStyle = '#fff';
-      ctx.beginPath();
-      ctx.moveTo(o.axis * w, o.top * h);
-      ctx.lineTo(o.axis * w, o.bottom * h);
-      ctx.stroke();
+      linie(o.achse, false);
       ctx.setLineDash([]);
     }
     // Markierung (halbtransparent), Radierer-Striche nehmen sie wieder weg
@@ -895,17 +980,19 @@ async function viewBlueprintEditor(id) {
   const run = () => {
     let error = '';
     try {
-      st.result = analyze(st.src, { crop: st.crop, sens: st.sens, brush: st.brush });
+      st.result = analyze(st.src, { crop: st.crop, sens: st.sens, brush: st.brush, hint: erkennungsHinweis(st.photo, st.src, st.gruppe) });
     } catch (err) {
       st.result = null;
       error = err.message;
     }
     draw();
+    const r = st.result;
+    const erkannt = r ? `Erkannt: ${r.form.label} · Leitseite ${r.quality.leitseite}${r.handles.length ? ` · Henkel ${r.quality.henkelSeite || ''}` : ''}${r.quality.ergaenzt > 0.03 ? ` · ${Math.round(r.quality.ergaenzt * 100)} % aus Formwissen ergänzt` : ''}. ` : '';
     statusEl.textContent = error
-      || (st.mode === 'rahmen'
-        ? 'Orange = ausgeschnittenes Stück. Passt es nicht, verschiebe den Rahmen oder die Empfindlichkeit – oder korrigiere mit „Hinzufügen“ / „Entfernen“.'
+      || erkannt + (st.mode === 'rahmen'
+        ? 'Passt der Umriss nicht, verschiebe den Rahmen oder die Empfindlichkeit – oder korrigiere mit „Hinzufügen“ / „Entfernen“.'
         : st.mode === 'pinsel'
-          ? 'Male mit dem Finger über Teile, die fehlen (z. B. Henkel). Die App übernimmt dort, was sich vom Hintergrund abhebt.'
+          ? 'Male mit dem Finger über Teile, die fehlen (z. B. einen Henkel).'
           : 'Male über Teile, die nicht zum Stück gehören (z. B. Schatten).');
     statusEl.style.color = error ? 'var(--bad)' : '';
     previewEl.innerHTML = st.result ? blueprintSvg(p, st.result, false) : '';
@@ -915,7 +1002,9 @@ async function viewBlueprintEditor(id) {
   const load = async () => {
     statusEl.textContent = 'Foto wird analysiert …';
     const photo = await db.get('photos', st.photoId);
+    st.photo = photo;
     st.src = await loadForAnalysis(photo.blob);
+    if (!st.crop) st.crop = cropFromGuide(photo.kamera?.guide);
     layout();
     run();
   };
@@ -998,16 +1087,19 @@ async function viewBlueprintEditor(id) {
     const b = e.target.closest('[data-photo-id]');
     if (!b || b.dataset.photoId === st.photoId) return;
     st.photoId = b.dataset.photoId;
-    st.crop = { ...DEFAULT_CROP };
+    st.crop = null;
     st.brush = [];
     $app.querySelectorAll('.bp-choice button').forEach(x => x.classList.toggle('active', x === b));
     load();
   });
 
+  $app.querySelector('#bp-gruppe').addEventListener('change', e => { st.gruppe = e.target.value || null; run(); });
+  $app.querySelector('#bp-foto')?.addEventListener('click', async () => { if (await neuesFoto()) router(); });
+
   $app.querySelector('#cancel').onclick = () => $back.click();
   applyBtn.onclick = async () => {
     if (!st.result) return;
-    p.blueprint = makeBlueprint(st.photoId, st.crop, st.sens, st.result, prev, st.brush);
+    p.blueprint = makeBlueprint(st.photoId, st.crop, st.sens, st.result, prev, st.brush, st.gruppe);
     p.updatedAt = new Date().toISOString();
     await db.put('pieces', p);
     toast('Blaupause gespeichert');
@@ -1642,8 +1734,9 @@ async function viewMore() {
     <div class="card">
       <h2>So funktioniert die Blaupause</h2>
       <ol class="small" style="padding-left:20px;margin:0">
-        <li>Fotografiere dein Stück <strong>genau von der Seite</strong> vor einem ruhigen Hintergrund.</li>
-        <li>Beim Speichern schneidet die App das Stück aus dem Foto aus, zeichnet es nach und markiert Rand, Bauch, Hals, Fußansatz und Boden.</li>
+        <li>Werkstück → Fotos → <strong>„Foto für Blaupause“</strong>. Eine Maske zeigt, wohin das Stück gehört: Handy senkrecht, Kamera auf halber Höhe, Henkel zur Seite. Die Wasserwaage wird grün, wenn die Haltung stimmt.</li>
+        <li>Die App trennt Stück und Hintergrund, teilt das Stück an der Mittellinie und nimmt die besser belichtete Seite als Vorlage für die andere. Was im Schatten, in Spiegelungen oder hinter Farbwechseln verloren geht, ergänzt sie aus ihrem Formwissen (über 3000 typische Becher, Tassen, Schüsseln und Vasen).</li>
+        <li>Die Blaupause wird leicht von oben gezeichnet, damit Öffnung und Boden als Ellipsen zu sehen sind. Rand, Bauch, Hals, Fußansatz und Boden werden markiert.</li>
         <li>Tippe ein Maß an, um es einzutragen. Schon ein Maß (z. B. die Höhe) reicht – die übrigen werden aus dem Foto geschätzt (≈).</li>
         <li>Fehlt eine Stelle (z. B. eine Rille)? Tippe auf die Form an dieser Höhe. Stellen lassen sich auch umbenennen oder ausblenden.</li>
         <li>Stimmt der Ausschnitt nicht (z. B. Schatten dabei, Teil fehlt)? „Umriss anpassen“ → mit „Hinzufügen“ oder „Entfernen“ darübermalen.</li>
@@ -1660,7 +1753,7 @@ async function viewMore() {
         <li>Mit dem <strong>Schieberegler</strong> siehst du, was aus jeder Auffälligkeit geworden ist. Bei der Glasur findest du alle Versuche sortiert nach Tauchdauer.</li>
       </ol>
     </div>
-    <p class="small muted" style="text-align:center">Töpferbuch · Version 1.1</p>`;
+    <p class="small muted" style="text-align:center">Töpferbuch · Version 1.2</p>`;
 
   $app.querySelector('#export').onclick = () => exportBackup({ pieces, glazes, firings, photos });
   const fileIn = $app.querySelector('#import-file');
@@ -1676,7 +1769,7 @@ async function exportBackup({ pieces, glazes, firings, photos }) {
     exportedAt: new Date().toISOString(),
     pieces, glazes, firings,
     photos: await Promise.all(photos.map(async p => ({
-      id: p.id, createdAt: p.createdAt,
+      id: p.id, createdAt: p.createdAt, kamera: p.kamera,
       blob: await blobToDataUrl(p.blob),
       thumb: p.thumb ? await blobToDataUrl(p.thumb) : null,
     }))),
@@ -1705,7 +1798,7 @@ async function importBackup(file) {
   toast('Sicherung wird geladen …');
   for (const p of data.photos || []) {
     forgetPhoto(p.id);
-    await db.put('photos', { id: p.id, createdAt: p.createdAt, blob: await dataUrlToBlob(p.blob), thumb: p.thumb ? await dataUrlToBlob(p.thumb) : null });
+    await db.put('photos', { id: p.id, createdAt: p.createdAt, ...(p.kamera ? { kamera: p.kamera } : {}), blob: await dataUrlToBlob(p.blob), thumb: p.thumb ? await dataUrlToBlob(p.thumb) : null });
   }
   for (const s of ['pieces', 'glazes', 'firings']) for (const x of data[s] || []) await db.put(s, x);
   toast('Sicherung geladen');

@@ -6,6 +6,7 @@
 // Ellipsen erscheinen – auch wenn das Foto frontal aufgenommen wurde.
 
 export { PROFILE_POINTS } from './erkennung.js';
+import { begradigen, glattGeschlossen, glatterPfad } from './kontur.js';
 
 // Blickwinkel der Zeichnung (Grad über der Waagrechten)
 export const BLICK = 18;
@@ -293,13 +294,15 @@ const pfad = (pts, closed) => pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixe
  */
 export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = [], interactive = true, seed = 1 } = {}) {
   const uid = `bp${++svgCounter}`;
-  const prof = bp.profile;
+  // auch ältere, noch nicht begradigte Profile sauber zeichnen
+  const prof = begradigen(bp.profile);
   const W = 400;
   const rAt = profileAt(prof);
   const v = ansicht(prof);
   const { sb, cb } = v;
 
-  const handles = (bp.handles || []).filter(h => h.length > 3);
+  // Henkel sind aus Bildpunkten nachgezogen (Treppenstufen): ruhig glätten
+  const handles = (bp.handles || []).filter(h => h.length > 3).map(h => glattGeschlossen(h));
   const hm = henkelMasse(bp);
   // Beschriftung auf die Seite ohne Henkel, Höhenmaß auf die andere
   const side = hm[0]?.side > 0 ? -1 : 1;
@@ -339,7 +342,7 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
     rechts.push([axis + v.w[k] * Hd, y]);
     links.push([axis - v.w[k] * Hd, y]);
   }
-  const umriss = [...vereinfachen(rechts, 0.25), ...vereinfachen(links.reverse(), 0.25)];
+  const umriss = [...vereinfachen(rechts, 0.4), ...vereinfachen(links.reverse(), 0.4)];
   const umrissPfad = pfad(umriss, true);
 
   const r0 = rAt(0), rI = Math.max(0, r0 - Math.max(0.018, 0.07 * r0));
@@ -353,7 +356,7 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
   for (const p of interior) shape += `<path d="${arc(p.t, true)}" class="thin"/><path d="${arc(p.t, false)}" class="dash"/>`;
   // Henkel liegen seitlich in der Bildebene; was hinter dem Körper liegt, ist verdeckt
   let henkel = '';
-  for (const h of handles) henkel += `<path d="${pfad(h.map(([x, t]) => [axis + x * Hd, yOf(t)]), true)}"/>`;
+  for (const h of handles) henkel += `<path d="${glatterPfad(h.map(([x, t]) => [axis + x * Hd, yOf(t)]))}"/>`;
   if (henkel) shape += `<g mask="url(#${uid}-hm)">${henkel}</g>`;
 
   // Henkelmaße als Text: Ansatzhöhen und wie weit er absteht

@@ -1,21 +1,23 @@
 // Formerkennung: das keramische Stück im Foto finden und seine Kontur messen.
 //
 // Ablauf
-// 1. Farben in Lab umrechnen. Hintergrund (Bildrand, außerhalb der Aufnahme-Maske) und
-//    Stück (Mitte) bekommen je ein Farbmodell. Die Modelle sind schattentolerant: Ein Farbton,
-//    der nur dunkler ist (Schlagschatten, abgewandte Seite), zählt als dieselbe Farbe.
-// 2. Kanten aus Helligkeit und Farbton.
-// 3. Für die linke und rechte Hälfte wird je Bildzeile die Außenkante gesucht – als
-//    zusammenhängender Weg von oben nach unten (dynamische Programmierung): Farbe innen
-//    wie Stück, außen wie Hintergrund, möglichst auf einer Kante, ohne Sprünge.
-// 4. Mittellinie aus beiden Seiten. Die Seite mit der klareren Kante ist die Leitseite;
-//    wo die andere Seite abweicht (Schatten, Henkel), gilt die Leitseite gespiegelt.
+// 1. Farben in Lab umrechnen, Kanten als Strukturtensor (Richtung und Stärke).
+// 2. Mittelachse suchen: dort, wo viele Kanten spiegelgleich links und rechts liegen.
+//    Mehrere Kandidaten werden verfolgt; gewählt wird der mit dem besten Umriss, der
+//    innen spiegelgleich aussieht und nahe der Bildmitte (oder dem getippten Punkt) liegt.
+// 3. Umriss für beide Seiten gemeinsam als zusammenhängender Weg von oben nach unten
+//    (dynamische Programmierung über die halbe Breite): Beide Seiten müssen auf einer
+//    Kante liegen, deren Richtung zur Kontur passt. Ein Drehteil ist symmetrisch, Dinge
+//    im Hintergrund fast nie – so stören Bilder, Regale und Nachbargefäße kaum.
+// 4. Farbmodelle: Stück (Kern um die Achse) und Hintergrund (Rand, knapp außerhalb)
+//    sind schattentolerant – ein nur dunklerer Farbton zählt als dieselbe Farbe.
+//    Ein zweiter Durchgang nutzt zusätzlich die Farbe. Die Seite mit der klareren Kante
+//    ist die Leitseite; wo die andere abweicht (Schatten, Henkel), gilt sie gespiegelt.
 // 5. Öffnung und Boden erscheinen als (flache) Ellipsen; ihre Mitte ist die wahre
 //    Rand- bzw. Bodenhöhe. Bei Fotos von schräg oben wird die Perspektive herausgerechnet.
 // 6. Die gemessene Kontur wird mit dem Formwissen (formprior.js) abgeglichen: unsichere
 //    oder auffällig abweichende Stellen werden aus der passenden Formfamilie ergänzt.
-//    Mit dieser Erwartung als Führung wird die Kontur ein zweites Mal gesucht; die
-//    Farbmodelle lernen dabei aus dem ersten Ergebnis nach.
+//    Mit dieser Erwartung als Führung wird die Kontur ein letztes Mal gesucht.
 // 7. Henkel: was außerhalb des Körpers seitlich am Stück hängt.
 
 import { formAnpassen, MODELL_N } from './formprior.js';
@@ -24,7 +26,7 @@ export const PROFILE_POINTS = 200;
 export const DEFAULT_CROP = { x0: 0.02, y0: 0.02, x1: 0.98, y1: 0.98 };
 export const DEFAULT_SENS = 50;
 
-const ANALYSIS_SIZE = 480;
+const ANALYSIS_SIZE = 400;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 // ---------------------------------------------------------------------------
@@ -176,144 +178,291 @@ function stueckKarte(lab, fg, bg, w, h, bias) {
   return q;
 }
 
-function kanten(lab, w, h) {
+// ---------------------------------------------------------------------------
+// Kanten mit Richtung (Strukturtensor): wie stark ändert sich das Bild quer zu einer
+// gedachten Konturlinie? So zählen nur Kanten, die zur Richtung der Kontur passen –
+// waagrechte Regalkanten stören eine senkrechte Gefäßwand nicht.
+// ---------------------------------------------------------------------------
+
+function kantenTensor(lab, w, h) {
   const { L, A, B } = lab;
   const n = w * h;
-  const E = new Float32Array(n);
-  const vals = [];
+  let xx = new Float32Array(n), xy = new Float32Array(n), yy = new Float32Array(n);
   for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
     const k = y * w + x;
-    let m = 0;
+    let sxx = 0, sxy = 0, syy = 0;
     for (const [ch, wt] of [[L, 1], [A, 2], [B, 2]]) {
       const gx = ch[k - w + 1] + 2 * ch[k + 1] + ch[k + w + 1] - ch[k - w - 1] - 2 * ch[k - 1] - ch[k + w - 1];
       const gy = ch[k + w - 1] + 2 * ch[k + w] + ch[k + w + 1] - ch[k - w - 1] - 2 * ch[k - w] - ch[k - w + 1];
-      m += wt * (gx * gx + gy * gy);
+      sxx += wt * gx * gx; sxy += wt * gx * gy; syy += wt * gy * gy;
     }
-    E[k] = Math.sqrt(m);
-    if ((x + y) % 3 === 0) vals.push(E[k]);
+    xx[k] = sxx; xy[k] = sxy; yy[k] = syy;
   }
+  const box = a => {
+    const t = new Float32Array(n), o = new Float32Array(n);
+    for (let y = 0; y < h; y++) for (let x = 1; x < w - 1; x++) { const k = y * w + x; t[k] = (a[k - 1] + a[k] + a[k + 1]) / 3; }
+    for (let y = 1; y < h - 1; y++) for (let x = 0; x < w; x++) { const k = y * w + x; o[k] = (t[k - w] + t[k] + t[k + w]) / 3; }
+    return o;
+  };
+  xx = box(xx); xy = box(xy); yy = box(yy);
+  const vals = [];
+  for (let k = 0; k < n; k += 3) vals.push(Math.sqrt(xx[k] + yy[k]));
   vals.sort((a, b) => a - b);
   const scale = Math.max(6, vals[Math.floor(vals.length * 0.97)] || 1);
-  for (let k = 0; k < n; k++) E[k] = Math.min(1.5, E[k] / scale);
-  return E;
+  const s2 = 1 / (scale * scale);
+  const E = new Float32Array(n);
+  for (let k = 0; k < n; k++) {
+    xx[k] *= s2; xy[k] *= s2; yy[k] *= s2;
+    E[k] = Math.min(1.5, Math.sqrt(xx[k] + yy[k]));
+  }
+  // Grundrauschen (Putz, Holzmaserung, Sprenkel): darüber muss eine Kante liegen
+  const ev = [];
+  for (let k = 0; k < n; k += 5) ev.push(E[k]);
+  ev.sort((a, b) => a - b);
+  const rauschen = ev[Math.floor(ev.length * 0.6)] || 0;
+  // waagrechte Kanten (±3 Zeilen), zeilenweise aufsummiert
+  const hy = Float32Array.from(yy, v => Math.min(1.2, Math.sqrt(Math.max(0, v))));
+  const kappeSumme = new Float32Array(h * (w + 1));
+  for (let y = 0; y < h; y++) {
+    let s = 0;
+    for (let x = 0; x < w; x++) {
+      let m = 0;
+      for (let d = -3; d <= 3; d++) { const yy2 = y + d; if (yy2 >= 0 && yy2 < h && hy[yy2 * w + x] > m) m = hy[yy2 * w + x]; }
+      s += m;
+      kappeSumme[y * (w + 1) + x + 1] = s;
+    }
+  }
+  return { xx, xy, yy, E, rauschen, kappeSumme };
 }
 
 // ---------------------------------------------------------------------------
-// Kontur einer Seite: bester zusammenhängender Weg von oben nach unten
+// Mittelachse: wo liegen viele Kantenpaare spiegelgleich links und rechts?
+// Ein Drehkörper ist spiegelsymmetrisch – Dinge im Hintergrund fast nie dazu.
 // ---------------------------------------------------------------------------
 
-const ALPHA = 5; // Gewicht einer Kante gegenüber der Farbfläche
-const RHO = 0.5; // Gewicht der Farbfläche
-const C_ON = 10, C_OFF = 10;
-
-function konturSeite(ctx, side, erwartung) {
-  const { w, h, q, E, achse } = ctx;
-  let Umax = 0;
-  const ax = new Int32Array(h);
+function achseSuchen(T, w, h, mitte, streuung) {
+  const hx = Float32Array.from(T.xx, v => Math.sqrt(Math.max(0, v)));
+  const S = new Float64Array(2 * w);
+  const rowBest = new Float32Array(2 * w);
+  const touched = [];
+  const peaks = [];
   for (let y = 0; y < h; y++) {
-    ax[y] = Math.round(achse(y));
-    Umax = Math.max(Umax, side > 0 ? w - 1 - ax[y] : ax[y]);
+    peaks.length = 0;
+    const o = y * w;
+    for (let x = 1; x < w - 1; x++) { const v = hx[o + x]; if (v > 0.15 && v >= hx[o + x - 1] && v > hx[o + x + 1]) peaks.push(x); }
+    touched.length = 0;
+    for (let i = 0; i < peaks.length; i++) {
+      const xi = peaks[i], vi = hx[o + xi];
+      for (let j = i + 1; j < peaks.length; j++) {
+        const xj = peaks[j];
+        if (xj - xi < 6) continue;
+        const b = xi + xj, v = Math.min(vi, hx[o + xj]);
+        if (v > rowBest[b]) { if (!rowBest[b]) touched.push(b); rowBest[b] = v; }
+      }
+    }
+    for (const b of touched) { S[b] += rowBest[b]; rowBest[b] = 0; }
   }
-  const U = Umax + 1;
-  const J = Math.max(4, Math.min(70, Math.round(U * 0.3)));
+  // glätten und mit der Erwartung (Bildmitte bzw. Mitte der Aufnahme-Maske) gewichten
+  const G = new Float64Array(2 * w);
+  for (let b = 0; b < 2 * w; b++) {
+    let s = 0;
+    for (let d = -3; d <= 3; d++) if (b + d >= 0 && b + d < 2 * w) s += S[b + d] * (4 - Math.abs(d));
+    const z = (b / 2 - mitte) / (streuung * w);
+    G[b] = s * Math.exp(-0.5 * z * z);
+  }
+  const kand = [];
+  for (let b = 1; b < 2 * w - 1; b++) if (G[b] > 0 && G[b] >= G[b - 1] && G[b] >= G[b + 1]) kand.push({ a: b / 2, s: G[b] });
+  kand.sort((p, q) => q.s - p.s);
+  const out = [];
+  for (const k of kand) {
+    if (out.length >= 4) break;
+    if (k.s < 0.25 * (kand[0]?.s || 0)) break;
+    if (out.every(o => Math.abs(o.a - k.a) > 0.06 * w)) out.push(k);
+  }
+  return out.length ? out : [{ a: mitte, s: 0 }];
+}
+
+// ---------------------------------------------------------------------------
+// Symmetrische Kontur: je Bildzeile die halbe Breite u, so dass links und rechts
+// (Achse ± u) Kanten in Richtung der Kontur liegen. Eine starke Seite trägt auch,
+// wenn die andere im Schatten liegt (die gut belichtete Seite als Vorlage).
+// ---------------------------------------------------------------------------
+
+const ALPHA_S = 6; // Gewicht der Kanten
+const RHO = 0.8; // Gewicht der Farbfläche (zweiter Durchgang)
+const C_ON = 8, C_OFF = 8;
+
+function symKontur(ctx, { erwartung = null, mitFarbe = false, schwelle = 1 } = {}) {
+  const { w, h, T, q, achse } = ctx;
+  const ax = Float64Array.from({ length: h }, (_, y) => achse(y));
+  let U = 0;
+  for (let y = 0; y < h; y++) U = Math.max(U, Math.ceil(Math.max(ax[y], w - 1 - ax[y])));
+  U = Math.max(4, U);
   const NEG = -1e9;
-  let prev = new Float32Array(U).fill(NEG);
-  let cur = new Float32Array(U);
-  const from = new Int16Array(h * U);
+  // Sprünge der Breite von Zeile zu Zeile: klein quadratisch, groß linear (Keramik hat am
+  // Körper keine Stufen; Rand und Boden beginnen bzw. enden direkt in voller Breite, wenn
+  // dort eine passende Kante liegt). Lineare Strafe → bester Vorgänger über laufende Maxima.
+  const PL = 0.6, P0 = 2 - 2 * PL; // pen(d) = P0 + PL·d für d ≥ 3
+  const pen = d => (d <= 2 ? 0.5 * d * d : P0 + PL * d);
+  const sufW = new Float32Array(U + 2), sufA = new Int32Array(U + 2);
+  let prev = new Float32Array(U + 1).fill(NEG), cur = new Float32Array(U + 1);
+  const from = new Int16Array(h * (U + 1));
   const postFrom = new Int16Array(h).fill(-2);
   let post = NEG;
-  const pre = new Float32Array(U), raw = new Float32Array(U);
-  const pen = new Float32Array(J + 1);
-  for (let d = 0; d <= J; d++) pen[d] = d <= 2 ? 0.6 * d * d : 2.4 + 1.1 * (d - 2);
+  const lxx = new Float32Array(U + 1), lxy = new Float32Array(U + 1), lyy = new Float32Array(U + 1);
+  const rxx = new Float32Array(U + 1), rxy = new Float32Array(U + 1), ryy = new Float32Array(U + 1);
+  const reg = new Float32Array(U + 1);
+  const c0 = ALPHA_S * Math.sqrt(Math.max(0.17, 1.6 * T.rauschen + 0.06)) * schwelle;
+  const uRand = Math.max(6, Math.round(0.1 * U));
+  // Waagrechte Kante über die ganze Breite (Bogen der Öffnung oben, Standfläche unten)
+  const capRausch = Math.max(0.17, 1.6 * T.rauschen + 0.06) * schwelle;
+  const kappe = new Float32Array(U + 1), kappeVor = new Float32Array(U + 1);
+  const KP = T.kappeSumme;
+  const tens = (y, x) => (x >= 0 && x < w ? y * w + x : -1);
+  // Gibt es in den nächsten Zeilen (Richtung dir) noch Seitenkanten im Abstand u?
+  const seitenLaufenWeiter = (y0, u, dir) => {
+    let sum = 0, n = 0;
+    for (let k = 0; k < 4; k++) {
+      const y = y0 + dir * k;
+      if (y < 0 || y >= h) break;
+      const kl = tens(y, Math.round(ax[y] - u)), kr = tens(y, Math.round(ax[y] + u));
+      if (kl < 0 || kr < 0) continue;
+      sum += symKante(T.xx[kl], T.xy[kl], T.yy[kl], T.xx[kr], T.xy[kr], T.yy[kr], 0, 1);
+      n++;
+    }
+    return n > 0 && (ALPHA_S * sum) / n > c0 * 1.3;
+  };
 
   for (let y = 0; y < h; y++) {
-    const lim = side > 0 ? w - 1 - ax[y] : ax[y];
-    // Fläche: aufsummiert von der Achse nach außen
-    let s = 0, sr = 0;
-    for (let u = 0; u < U; u++) {
-      if (u <= lim) {
-        const v = q[y * w + ax[y] + side * u];
-        // klar Stück zählt voll, klar Hintergrund kostet; „unsicher“ (um 0) ist neutral
-        s += RHO * (v > 0 ? v : v > -0.25 ? 0 : 0.35 * (v + 0.25));
-        sr += v;
+    const a = ax[y];
+    let s = 0;
+    for (let u = 0; u <= U; u++) {
+      const xl = Math.round(a - u), xr = Math.round(a + u);
+      if (xl >= 0 && xl < w) { const k = y * w + xl; lxx[u] = T.xx[k]; lxy[u] = T.xy[k]; lyy[u] = T.yy[k]; } else lxx[u] = lxy[u] = lyy[u] = 0;
+      if (xr >= 0 && xr < w) { const k = y * w + xr; rxx[u] = T.xx[k]; rxy[u] = T.xy[k]; ryy[u] = T.yy[k]; } else rxx[u] = rxy[u] = ryy[u] = 0;
+      if (mitFarbe && q) {
+        const vl = xl >= 0 && xl < w ? q[y * w + xl] : -0.5, vr = xr >= 0 && xr < w ? q[y * w + xr] : -0.5;
+        // klar Stück zählt, klar Hintergrund kostet; unsicher (um 0) zählt nicht
+        const f = v => (v > 0.2 ? v - 0.2 : v > -0.2 ? 0 : 0.7 * (v + 0.2));
+        s += RHO * 0.5 * (f(vl) + f(vr));
       }
-      pre[u] = s;
-      raw[u] = sr;
+      reg[u] = s;
     }
-    // Ende: aus einem Objektzustand der Vorzeile in „danach leer“ wechseln
+    for (let u = 0; u <= U; u++) {
+      // muss über die ganze Breite liegen: schwächstes der vier Viertel zählt
+      const l = Math.round(a - u), r = Math.round(a + u);
+      let m = Infinity;
+      for (let i = 0; i < 4; i++) {
+        const x0 = clamp(Math.round(l + ((r - l) * i) / 4), 0, w - 1), x1 = clamp(Math.round(l + ((r - l) * (i + 1)) / 4), 0, w - 1);
+        m = Math.min(m, (KP[y * (w + 1) + x1 + 1] - KP[y * (w + 1) + x0]) / (x1 - x0 + 1));
+      }
+      kappe[u] = m;
+    }
+    // Ende: aus einem Zustand der Vorzeile nach „danach leer“ – schmal (Bogen der Bodenellipse)
+    // oder breit, wenn dort die Standfläche als waagrechte Kante liegt
     let bestPrev = NEG, bestPrevU = -1;
-    for (let u = 0; u < U; u++) if (prev[u] > bestPrev) { bestPrev = prev[u]; bestPrevU = u; }
+    for (let u = 0; u <= U; u++) {
+      // breit enden nur, wenn die Seitenkanten darunter wirklich aufhören (sonst ist es z. B.
+      // eine Glasurgrenze)
+      const bonus = u <= uRand ? 0 : kappeVor[u] > capRausch + 0.08 && !seitenLaufenWeiter(y, u, 1) ? ALPHA_S * 2 * (kappeVor[u] - capRausch) : NEG;
+      if (prev[u] + bonus > bestPrev) { bestPrev = prev[u] + bonus; bestPrevU = u; }
+    }
     if (bestPrev - C_OFF > post) { post = bestPrev - C_OFF; postFrom[y] = bestPrevU; } else postFrom[y] = -1;
 
-    const ew = erwartung?.u[y];
-    for (let u = 0; u < U; u++) {
-      if (u < 2 || u > lim) { cur[u] = NEG; continue; }
-      // Kante zählt nur, wenn innen eher Stück und außen eher Hintergrund ist
-      const qi = (raw[u - 1] - raw[Math.max(0, u - 5)]) / Math.max(1, Math.min(4, u - 1));
-      const qo = (raw[Math.min(lim, u + 4)] - raw[Math.min(lim, u)]) / Math.max(1, Math.min(4, lim - u));
-      const g = clamp(0.5 + 0.5 * (qi - qo), 0, 1) * clamp(1 + qi, 0, 1);
-      let obj = pre[u] + ALPHA * g * E[y * w + ax[y] + side * u] - 0.6;
+    const ue = erwartung ? erwartung.u[y] : -1;
+    sufW[U + 1] = NEG; sufA[U + 1] = -1;
+    for (let v = U; v >= 0; v--) {
+      const val = v >= 2 && prev[v] > NEG / 2 ? prev[v] - PL * v : NEG;
+      if (val > sufW[v + 1]) { sufW[v] = val; sufA[v] = v; } else { sufW[v] = sufW[v + 1]; sufA[v] = sufA[v + 1]; }
+    }
+    let preW = NEG, preA = -1;
+    for (let u = 0; u <= U; u++) {
+      if (u < 2) { cur[u] = NEG; continue; }
+      let extra = reg[u] - c0;
       if (erwartung) {
-        if (ew >= 0) { const z = (u - ew) / erwartung.s[y]; obj -= erwartung.kraft * Math.log(1 + z * z); } else obj -= erwartung.kraft * 2.5;
+        if (ue >= 0) { const z = (u - ue) / erwartung.s[y]; extra -= erwartung.kraft * Math.log(1 + z * z); } else extra -= erwartung.kraft * 2.5;
       }
-      // Vorgänger: Eintritt aus „davor leer“ oder Fortsetzung
-      let best = -C_ON, arg = -1;
-      const lo = Math.max(2, u - J), hi = Math.min(U - 1, u + J);
-      for (let v = lo; v <= hi; v++) {
-        const c = prev[v] - pen[Math.abs(v - u)];
+      // Eintritt nur schmal (Spitze der Öffnungsellipse) oder ganz oben am Bildrand
+      let eintritt = NEG;
+      if (u <= uRand || y === 0) eintritt = -C_ON + ALPHA_S * symKante(lxx[u], lxy[u], lyy[u], rxx[u], rxy[u], ryy[u], 0, 1);
+      else if (kappe[u] > capRausch + 0.08 && !seitenLaufenWeiter(y - 1, u, -1)) eintritt = -C_ON + ALPHA_S * 2 * (kappe[u] - capRausch);
+      let best = eintritt, arg = -1;
+      const kante = dw => ALPHA_S * symKante(lxx[u], lxy[u], lyy[u], rxx[u], rxy[u], ryy[u], dw, 1 / (1 + dw * dw));
+      // kleine Schritte genau
+      for (let v = Math.max(2, u - 2); v <= Math.min(U, u + 2); v++) {
+        const pv = prev[v];
+        if (pv <= NEG / 2) continue;
+        const c = pv - pen(Math.abs(u - v)) + kante(u - v);
         if (c > best) { best = c; arg = v; }
       }
-      cur[u] = obj + best;
-      from[y * U + u] = arg;
+      // große Schritte von schmaler (v ≤ u−3) und von breiter (v ≥ u+3)
+      const vIn = u - 3;
+      if (vIn >= 2 && prev[vIn] > NEG / 2 && prev[vIn] + PL * vIn > preW) { preW = prev[vIn] + PL * vIn; preA = vIn; }
+      if (preA >= 0) { const c = preW - PL * u - P0 + kante(u - preA); if (c > best) { best = c; arg = preA; } }
+      if (u + 3 <= U && sufA[u + 3] >= 0) { const v = sufA[u + 3]; const c = sufW[u + 3] + PL * u - P0 + kante(u - v); if (c > best) { best = c; arg = v; } }
+      cur[u] = best + extra;
+      from[y * (U + 1) + u] = arg;
     }
     [prev, cur] = [cur, prev];
+    kappeVor.set(kappe);
   }
   // Rückverfolgung
   const out = new Int32Array(h).fill(-1);
   let bestEnd = NEG, uEnd = -1;
-  for (let u = 0; u < U; u++) if (prev[u] > bestEnd) { bestEnd = prev[u]; uEnd = u; }
-  let y = h - 1;
-  let u;
+  for (let u = 0; u <= U; u++) if (prev[u] > bestEnd) { bestEnd = prev[u]; uEnd = u; }
+  let y = h - 1, u;
+  const score = Math.max(post, bestEnd);
   if (post >= bestEnd) {
-    // im Zustand „danach leer“ geendet: Zeile suchen, in der gewechselt wurde
     while (y >= 0 && postFrom[y] < 0) y--;
-    if (y < 0) return out;
+    if (y < 0) return { u: out, score: 0 };
     u = postFrom[y];
     y--;
   } else u = uEnd;
   while (y >= 0 && u >= 0) {
     out[y] = u;
-    u = from[y * U + u];
+    u = from[y * (U + 1) + u];
     y--;
   }
-  return out;
+  return { u: out, score };
 }
 
-// Wie sicher ist die gefundene Kante je Zeile? (0 … 1)
-function sicherheit(ctx, side, us) {
-  const { w, h, q, E, achse } = ctx;
-  const c = new Float32Array(h);
+// Kantenstärke quer zur Kontur auf beiden Seiten (Steigung dw Pixel je Zeile)
+function symKante(lxx, lxy, lyy, rxx, rxy, ryy, dw, inv) {
+  const pr = (rxx - 2 * dw * rxy + dw * dw * ryy) * inv;
+  const pl = (lxx + 2 * dw * lxy + dw * dw * lyy) * inv;
+  const er = Math.min(1.2, Math.sqrt(pr > 0 ? pr : 0)), el = Math.min(1.2, Math.sqrt(pl > 0 ? pl : 0));
+  // vor allem das Spiegelpaar zählt; eine einzelne Kante ohne Gegenstück nur wenig.
+  // Wurzel: schwache, aber echte Kanten (weiß vor hellem Grund) gehen neben kräftigen
+  // Kanten im Hintergrund nicht unter
+  const v = er < el ? er + 0.15 * el : el + 0.15 * er;
+  return Math.sqrt(v);
+}
+
+// Kantenstärke je Seite entlang des gefundenen Wegs; dazu die genaue Lage der Kante
+// (±4 px um die symmetrische Lage), um die Achse nachzuführen
+function seitenMessen(ctx, us) {
+  const { w, h, T, achse } = ctx;
+  const res = { cL: new Float32Array(h), cR: new Float32Array(h), xL: new Float32Array(h).fill(-1), xR: new Float32Array(h).fill(-1) };
   for (let y = 0; y < h; y++) {
     const u = us[y];
     if (u < 0) continue;
-    const ax = Math.round(achse(y));
-    const px = d => { const x = ax + side * d; return x >= 0 && x < w ? q[y * w + x] : -1; };
-    let inn = 0, aus = 0;
-    for (let d = 2; d <= 6; d++) { inn += px(u - d); aus += px(u + d); }
-    const kontrast = clamp((inn - aus) / 10, 0, 1);
-    let e = 0;
-    for (let d = -1; d <= 1; d++) { const x = ax + side * (u + d); if (x >= 0 && x < w) e = Math.max(e, E[y * w + x]); }
-    c[y] = clamp(0.55 * kontrast + 0.45 * Math.min(1, e / 0.7), 0, 1);
+    const up = y > 0 && us[y - 1] >= 0 ? us[y - 1] : u, dn = y < h - 1 && us[y + 1] >= 0 ? us[y + 1] : u;
+    const dw = (dn - up) / 2, inv = 1 / (1 + dw * dw);
+    const a = achse(y);
+    for (const side of [-1, 1]) {
+      let best = 0, bx = -1;
+      for (let d = -4; d <= 4; d++) {
+        const x = Math.round(a + side * (u + d));
+        if (x < 0 || x >= w) continue;
+        const k = y * w + x;
+        const p = (T.xx[k] - side * 2 * dw * T.xy[k] + dw * dw * T.yy[k]) * inv;
+        const e = Math.sqrt(p > 0 ? p : 0) * (1 - 0.04 * Math.abs(d));
+        if (e > best) { best = e; bx = x; }
+      }
+      if (side < 0) { res.cL[y] = clamp(best / 0.7, 0, 1); res.xL[y] = bx; } else { res.cR[y] = clamp(best / 0.7, 0, 1); res.xR[y] = bx; }
+    }
   }
-  // leicht glätten
-  const o = new Float32Array(h);
-  for (let y = 0; y < h; y++) {
-    if (us[y] < 0) continue;
-    let s = 0, n = 0;
-    for (let j = -3; j <= 3; j++) if (y + j >= 0 && y + j < h && us[y + j] >= 0) { s += c[y + j]; n++; }
-    o[y] = s / n;
-  }
-  return o;
+  return res;
 }
 
 // Robuste Gerade x = a + b·(y − y0) durch die Mittelpunkte
@@ -404,7 +553,8 @@ function pinsel(q, brush, w, h, IW, IH, x0, y0) {
 /**
  * src: { width, height, data } (RGBA)
  * crop: Rahmen (relativ), sens: Empfindlichkeit 0–100, brush: Pinselstriche
- * hint: { gruppe, familie, guide: {x0,y0,x1,y1}, blick: Grad nach unten (Lagesensor) }
+ * hint: { gruppe, familie, guide: {x0,y0,x1,y1}, blick: Grad nach unten (Lagesensor), brennweite,
+ *         punkt: {x,y} angetipptes Stück (relativ) }
  */
 export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS, brush = [], hint = {} } = {}) {
   const { width: IW, height: IH, data } = src;
@@ -414,77 +564,24 @@ export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS, brush =
   const y1 = clamp(Math.round(crop.y1 * IH), y0 + 16, IH);
   const w = x1 - x0, h = y1 - y0, n = w * h;
   const lab = labBild(data, IW, x0, y0, w, h);
-  const E = kanten(lab, w, h);
+  const T = kantenTensor(lab, w, h);
   const bias = ((sens - 50) / 50) * 4;
+  const schwelle = 2 ** ((50 - sens) / 50);
+  const band = Math.max(3, Math.round(0.035 * Math.min(w, h)));
+
+  // Pinsel: „Entfernen“ löscht dort die Kanten, „Hinzufügen“ zählt im zweiten Durchgang als Stück
+  if (brush.length) {
+    const m = new Float32Array(n);
+    pinsel(m, brush, w, h, IW, IH, x0, y0);
+    for (let k = 0; k < n; k++) if (m[k] < 0) { T.xx[k] = T.xy[k] = T.yy[k] = 0; T.E[k] = 0; }
+  }
 
   // Aufnahme-Maske im Ausschnitt
   const guide = hint.guide ? {
     x0: hint.guide.x0 * IW - x0, x1: hint.guide.x1 * IW - x0, y0: hint.guide.y0 * IH - y0, y1: hint.guide.y1 * IH - y0,
   } : null;
-
-  // --- Hintergrund: Rand des Ausschnitts (und alles weit außerhalb der Maske)
-  const band = Math.max(3, Math.round(0.035 * Math.min(w, h)));
-  const bgIdx = [];
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-    // unten nur seitlich: dort steht oft noch der Fuß des Stücks im Rahmen
-    const rand = x < band || y < band || x >= w - band || (y >= h - band && (x < w * 0.2 || x > w * 0.8));
-    const aussen = guide && (x < guide.x0 - 0.12 * w || x > guide.x1 + 0.12 * w || y < guide.y0 - 0.08 * h);
-    if (rand || aussen) bgIdx.push(y * w + x);
-  }
-  let bgModel = farbmodell(lab, bgIdx, 6);
-
-  // --- Erster Eindruck vom Stück: was sich klar vom Hintergrund abhebt, nahe der Mitte
-  const cb = new Float32Array(n);
-  for (let k = 0; k < n; k++) cb[k] = kosten(bgModel, lab.L[k] + 16, lab.A[k], lab.B[k], 0.42, 1.08);
-  const sortedCb = Float32Array.from(cb).sort();
-  const thr = Math.max(12, sortedCb[Math.floor(n * 0.5)] * 3, otsu(cb));
-  const fg0 = new Uint8Array(n);
-  for (let k = 0; k < n; k++) fg0[k] = cb[k] > thr + bias * 2 ? 1 : 0;
-  pinselMaske(fg0, brush, w, h, IW, IH, x0, y0);
-  const cx = guide ? (guide.x0 + guide.x1) / 2 : w / 2;
-  const cy = guide ? (guide.y0 + guide.y1) / 2 : h / 2;
-  const { lab: comp, info } = komponenten(erode(fg0, w, h, 1), w, h, 1);
-  let bestId = 0, bestScore = 0;
-  info.forEach((c, i) => {
-    const d = Math.hypot((c.sx / c.area - cx) / w, (c.sy / c.area - cy) / h);
-    // Flächen, die mehrere Bildränder berühren, sind meist Tisch oder Wand
-    // … und ein Stück ist nicht nur ein kleiner Fleck (z. B. ein Glanzlicht auf dunkler Glasur)
-    const s = c.area * Math.exp(-4 * d * d) * [1, 0.4, 0.05, 0.02, 0.01][c.kanten] * (c.hoehe < 0.15 * h && c.breite < 0.3 * w ? 0.05 : 1);
-    if (s > bestScore) { bestScore = s; bestId = i + 1; }
-  });
-  const fgIdx = [];
-  const bi = bestId ? info[bestId - 1] : null;
-  const klar = bi && bi.area > n * 0.01 && (bi.hoehe >= 0.15 * h || bi.breite >= 0.3 * w);
-  if (klar) {
-    const core = erode(Uint8Array.from(comp, v => (v === bestId ? 1 : 0)), w, h, 2);
-    for (let k = 0; k < n; k++) if (core[k]) fgIdx.push(k);
-  } else bestId = 0;
-  if (fgIdx.length < 50 || (bi.hoehe < 0.35 * h && bi.breite < 0.35 * w)) {
-    // Stück hebt sich kaum ab (z. B. dunkel vor dunkler Wand): auch den Kern der Mitte nehmen
-    const gx0 = guide ? guide.x0 : w * 0.3, gx1 = guide ? guide.x1 : w * 0.7;
-    const gy0 = guide ? guide.y0 : h * 0.25, gy1 = guide ? guide.y1 : h * 0.75;
-    for (let y = Math.round(gy0 + (gy1 - gy0) * 0.25); y < gy0 + (gy1 - gy0) * 0.8; y++) {
-      for (let x = Math.round(cx - (gx1 - gx0) * 0.12); x < cx + (gx1 - gx0) * 0.12; x++) if (x >= 0 && x < w && y >= 0 && y < h) fgIdx.push(y * w + x);
-    }
-  }
-  let fgModel = farbmodell(lab, fgIdx, 6);
-  let q = stueckKarte(lab, fgModel, bgModel, w, h, bias);
-  pinsel(q, brush, w, h, IW, IH, x0, y0);
-
-  // Erste Achse: häufigste Zeilenmitte des ersten Eindrucks
-  let achse0 = cx;
-  if (bestId) {
-    const mids = [];
-    for (let y = 0; y < h; y++) {
-      let l = -1, r = -1;
-      for (let x = 0; x < w; x++) if (comp[y * w + x] === bestId) { if (l < 0) l = x; r = x; }
-      if (l >= 0 && r - l > 4) mids.push((l + r) / 2);
-    }
-    if (mids.length > 10) achse0 = modus(mids, w);
-  }
-
   const ctx = {
-    w, h, q, E, achse: () => achse0,
+    w, h, T, E: T.E, lab, band, q: null, achse: null,
     // Kamera: optische Achse in der Bildmitte, Brennweite (Anteil der langen Bildseite), Neigung
     geo: {
       cy: IH / 2 - y0,
@@ -493,138 +590,139 @@ export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS, brush =
       bekannt: Number.isFinite(hint.blick),
     },
   };
-  let erg = null;
-  for (let pass = 0; pass < 2; pass++) {
-    const erw = pass && erg ? erwartungAus(erg, h) : null;
-    const uL = konturSeite(ctx, -1, erw?.links);
-    const uR = konturSeite(ctx, 1, erw?.rechts);
-    erg = auswerten(ctx, uL, uR, hint);
-    if (!erg) throw new Error('Kein Werkstück erkannt. Ziehe den Rahmen enger um das Stück oder ändere die Empfindlichkeit.');
-    if (pass === 0) {
-      // Farbmodelle aus dem ersten Ergebnis nachlernen (innen = Stück, außen = Hintergrund)
-      const inn = [], aus = [];
-      for (let y = 0; y < h; y++) {
-        const wv = erg.silh[y];
-        const a = erg.achse(y);
-        for (let x = 0; x < w; x += 2) {
-          const d = Math.abs(x - a);
-          if (wv > 3 && d < wv - 3) inn.push(y * w + x);
-          // Henkel und andere klar zum Stück gehörende Teile nicht als Hintergrund lernen
-          else if ((wv < 0 || d > wv + 4) && q[y * w + x] < 0.3) aus.push(y * w + x);
-        }
-      }
-      if (inn.length > 100 && aus.length > 100) {
-        fgModel = farbmodell(lab, inn, 7);
-        bgModel = farbmodell(lab, aus, 7);
-        const q2 = stueckKarte(lab, fgModel, bgModel, w, h, bias);
-        pinsel(q2, brush, w, h, IW, IH, x0, y0);
-        ctx.q = q2;
-      }
-      ctx.achse = erg.achse;
-    }
-  }
 
-  const henkel = henkelFinden({ ...ctx, q1: q, lab, band }, erg, brush.length > 0);
+  // 1. Mittelachse: Kandidaten aus spiegelgleichen Kantenpaaren, für jeden die
+  //    symmetrische Kontur suchen und die überzeugendste nehmen
+  // Mitte: angetipptes Stück, sonst Mitte der Aufnahme-Maske, sonst Bildmitte
+  const punkt = hint.punkt ? hint.punkt.x * IW - x0 : null;
+  const mitte = punkt ?? (guide ? (guide.x0 + guide.x1) / 2 : w / 2);
+  const streu = punkt != null ? 0.07 : guide ? 0.18 : 0.24;
+  let best = null;
+  for (const k of achseSuchen(T, w, h, mitte, streu)) {
+    const p = symKontur({ ...ctx, achse: () => k.a }, { schwelle });
+    // Ein Drehteil ist auch innen spiegelgleich: Farben links und rechts der Achse ähneln sich
+    // (Helligkeit zählt wenig – eine Seite liegt oft im Schatten). Wand + Gefäß ist das nicht.
+    const ung = spiegelUngleichheit(lab, w, h, k.a, p.u);
+    const z = (k.a - mitte) / (streu * w);
+    p.wert = Math.max(0, p.score) * Math.exp(-ung / 25) * Math.exp(-0.5 * z * z);
+    if (!best || p.wert > best.p.wert) best = { k, p };
+  }
+  // 2. Achse nachführen (Handy etwas schief, Stück nicht genau im Bild ausgerichtet)
+  let achse = () => best.k.a;
+  let pfad = best.p;
+  for (let it = 0; it < 1; it++) {
+    const m = seitenMessen({ ...ctx, achse }, pfad.u);
+    const rows = [];
+    for (let y = 0; y < h; y++) {
+      if (m.xL[y] < 0 || m.xR[y] < 0) continue;
+      const g = Math.min(m.cL[y], m.cR[y]);
+      if (g > 0.3) rows.push({ y, x: (m.xL[y] + m.xR[y]) / 2, w: g * g });
+    }
+    achse = achseAnpassen(rows, achse);
+    pfad = symKontur({ ...ctx, achse }, { schwelle });
+  }
+  ctx.achse = achse;
+  if (pfad.u.filter(u => u >= 0).length < 20) throw new Error('Kein Werkstück erkannt. Ziehe den Rahmen enger um das Stück oder ändere die Empfindlichkeit.');
+
+  // 3. Farbmodelle: innen = Stück, gleich daneben = Hintergrund (nicht der ganze Bildrand)
+  const { fg, bg } = farbmodelleAus(lab, pfad.u, achse, w, h, band);
+  const q = stueckKarte(lab, fg, bg, w, h, bias);
+  pinsel(q, brush, w, h, IW, IH, x0, y0);
+  ctx.q = q;
+
+  // 4. Messen, Perspektive, Formwissen; dann mit Farbe und Erwartung ein zweites Mal suchen
+  // mit Farbe ohne Vorgabe neu suchen, damit ein zu weiter erster Umriss nicht weiterwirkt
+  const pfadF = symKontur(ctx, { mitFarbe: true, schwelle });
+  if (pfadF.u.filter(u => u >= 0).length >= 20) pfad = pfadF;
+  let erg = messen(ctx, pfad, hint);
+  if (!erg) throw new Error('Kein Werkstück erkannt. Ziehe den Rahmen enger um das Stück oder ändere die Empfindlichkeit.');
+  const pfad2 = symKontur(ctx, { erwartung: erwartungAus(erg, h), mitFarbe: true, schwelle });
+  const erg2 = messen(ctx, pfad2, hint);
+  if (erg2) erg = erg2;
+
+  const henkel = henkelFinden(ctx, erg, brush.length > 0);
   return ergebnis(erg, henkel, { IW, IH, x0, y0, w, h });
 }
 
-// Seiten zusammenführen, Ellipsen an Rand und Boden, Formwissen
-function auswerten(ctx, uL, uR, hint) {
-  const { h } = ctx;
-  // Henkel mit sichtbarem Loch: von außen über Henkel und Loch nach innen bis zur Körperkante
-  const kL = koerperKante(ctx, -1, uL), kR = koerperKante(ctx, 1, uR);
-  uL = kL.u; uR = kR.u;
-  const henkelSpans = { '-1': kL, '1': kR };
-  let cL = sicherheit(ctx, -1, uL), cR = sicherheit(ctx, 1, uR);
-
-  // Mittellinie: robuste Gerade durch die Zeilenmitten; im zweiten Schritt nur Zeilen,
-  // in denen beide Seiten gleich weit reichen (ohne Henkel)
-  const mitten = [];
-  for (let y = 0; y < h; y++) {
-    if (uL[y] < 0 || uR[y] < 0) continue;
-    const a0 = Math.round(ctx.achse(y));
-    const wt = Math.min(cL[y], cR[y]);
-    if (wt > 0.2) mitten.push({ y, x: a0 + (uR[y] - uL[y]) / 2, w: wt * wt, l: a0 - uL[y], r: a0 + uR[y] });
-  }
-  let achse = achseAnpassen(mitten, ctx.achse);
-  const sym = mitten.filter(m => { const a = achse(m.y), dl = a - m.l, dr = m.r - a; return Math.abs(dl - dr) < 0.12 * Math.max(dl, dr) + 3; });
-  if (sym.length >= 10) achse = achseAnpassen(sym, achse);
-  const rL = new Float32Array(h).fill(-1), rR = new Float32Array(h).fill(-1);
-  for (let y = 0; y < h; y++) {
-    const a0 = Math.round(ctx.achse(y)), a = achse(y);
-    if (uL[y] >= 0) rL[y] = Math.max(0, a - (a0 - uL[y]) + 0.5);
-    if (uR[y] >= 0) rR[y] = Math.max(0, a0 + uR[y] - a + 0.5);
-  }
-
-  // Leitseite: klarere Kante über die ganze Höhe
-  let qL = 0, qR = 0, nb = 0;
-  for (let y = 0; y < h; y++) if (rL[y] >= 0 && rR[y] >= 0) { qL += cL[y]; qR += cR[y]; nb++; }
-  if (nb < 12) return null;
-  qL /= nb; qR /= nb;
-  const leit = qL >= qR ? -1 : 1;
-
-  // Henkel: eine Seite reicht über längere Strecke deutlich weiter hinaus
-  const henkelZeile = new Int8Array(h);
-  for (const s of [-1, 1]) {
-    const a = s < 0 ? rL : rR, b = s < 0 ? rR : rL;
-    let run = [];
-    const flush = () => {
-      if (run.length > Math.max(6, nb * 0.08)) for (const y of run) henkelZeile[y] = s;
-      run = [];
-    };
-    for (let y = 0; y < h; y++) {
-      // Henkel: deutlich, aber nicht unplausibel weit; die schmalere Seite muss sicher sein
-      const cn = s < 0 ? cR[y] : cL[y];
-      if (a[y] >= 0 && b[y] >= 0 && a[y] > b[y] * 1.15 + 4 && a[y] < b[y] * 2 + 4 && cn > 0.4) run.push(y); else flush();
+function spiegelUngleichheit(lab, w, h, a, us) {
+  const { L, A, B } = lab;
+  let sum = 0, n = 0;
+  for (let y = 0; y < h; y += 2) {
+    const u = us[y];
+    if (u < 6) continue;
+    for (let f = 0.15; f < 0.9; f += 0.15) {
+      const d = f * u, xl = Math.round(a - d), xr = Math.round(a + d);
+      if (xl < 0 || xr >= w) continue;
+      const kl = y * w + xl, kr = y * w + xr;
+      sum += Math.sqrt(0.15 * (L[kl] - L[kr]) ** 2 + (A[kl] - A[kr]) ** 2 + (B[kl] - B[kr]) ** 2);
+      n++;
     }
-    flush();
   }
-  let henkelSeite = 0;
-  {
-    let l = 0, r = 0;
-    for (let y = 0; y < h; y++) { if (henkelZeile[y] < 0 || kL.loch[y]) l++; if (henkelZeile[y] > 0 || kR.loch[y]) r++; }
-    henkelSeite = l > r ? -1 : r > l ? 1 : 0;
-  }
+  return n ? sum / n : 99;
+}
 
-  // Zusammenführen
+function farbmodelleAus(lab, us, achse, w, h, band) {
+  let top = -1, bottom = -1, umax = 0;
+  for (let y = 0; y < h; y++) if (us[y] >= 0) { if (top < 0) top = y; bottom = y; umax = Math.max(umax, us[y]); }
+  const H = bottom - top;
+  const inn = [], aus = [];
+  for (let y = 0; y < h; y++) {
+    const u = us[y], a = achse(y);
+    for (let x = y & 1; x < w; x += 2) {
+      const d = Math.abs(x - a), k = y * w + x;
+      // Stück: nur der sichere Kern um die Achse (falls die erste Kontur zu weit ist)
+      if (u > 3 && d < Math.max(2, 0.45 * u)) { inn.push(k); continue; }
+      if (u > 3 && d < u + 4) continue;
+      const nah = u >= 0
+        ? d < u + 4 + Math.max(12, 0.5 * u)
+        : y > top - 0.15 * H && y < bottom + 0.15 * H && d < umax + 12;
+      if (nah || x < band || x >= w - band || y < band) aus.push(k);
+    }
+  }
+  const fg = farbmodell(lab, inn, 7);
+  // Proben neben dem Stück, die genauso aussehen wie das Stück (z. B. der Henkel), nicht als
+  // Hintergrund lernen – außer der Hintergrund sieht wirklich so aus (weiß auf weiß)
+  const { L, A, B } = lab;
+  const anders = aus.filter(k => kosten(fg, L[k] + 16, A[k], B[k], 0.5, 1.35) > 3);
+  const bg = farbmodell(lab, anders.length > aus.length * 0.75 ? anders : aus, 7);
+  return { fg, bg };
+}
+
+// Gefundene Kontur auswerten: Sicherheit je Seite, Leitseite, dann Profil
+function messen(ctx, pfad, hint) {
+  const { h, w, q, achse } = ctx;
+  const m = seitenMessen(ctx, pfad.u);
   const hw = new Float32Array(h).fill(-1), wt = new Float32Array(h);
-  let top = -1, bottom = -1;
+  const rL = new Float32Array(h).fill(-1), rR = new Float32Array(h).fill(-1);
+  let top = -1, bottom = -1, sL = 0, sR = 0, nb = 0;
   for (let y = 0; y < h; y++) {
-    const a = rL[y], b = rR[y];
-    if (a < 0 && b < 0) continue;
-    const ca = cL[y], cb = cR[y];
-    let r, c;
-    if (a >= 0 && b >= 0) {
-      const tol = Math.max(1.8, 0.04 * Math.max(a, b));
-      if (henkelZeile[y]) {
-        // Henkelseite: Körperkante vor dem Henkelloch suchen; mit der anderen Seite vergleichen
-        const hs = henkelZeile[y];
-        const [ro, co] = hs < 0 ? [b, cb] : [a, ca];
-        const inn = innereKante(ctx, achse, y, hs, hs < 0 ? a : b, ro);
-        if (inn && (Math.abs(inn.r - ro) <= tol * 2 || inn.c > co)) {
-          r = Math.abs(inn.r - ro) <= tol * 2 ? (inn.r * inn.c + ro * co) / (inn.c + co + 1e-6) : inn.r;
-          c = Math.max(inn.c, co) * 0.9;
-        } else { r = ro; c = co; }
-      } else if (Math.abs(a - b) <= tol) { r = (a * ca + b * cb) / (ca + cb + 1e-6); c = Math.max(ca, cb); } else {
-        const [rt, ct, ro, co] = leit < 0 ? [a, ca, b, cb] : [b, cb, a, ca];
-        if (ct >= 0.3 || ct >= co) { r = rt; c = ct * 0.85; } else { r = ro; c = co * 0.85; }
+    const u = pfad.u[y];
+    if (u < 0) continue;
+    const a = achse(y);
+    hw[y] = u + 0.5;
+    let c = 0.6 * Math.max(m.cL[y], m.cR[y]) + 0.4 * Math.min(m.cL[y], m.cR[y]);
+    if (q) {
+      // Farbe innen wie Stück, außen wie Hintergrund?
+      let inn = 0, aus = 0, n = 0;
+      for (const side of [-1, 1]) for (let d = 2; d <= 5; d++) {
+        const xi = Math.round(a + side * (u - d)), xo = Math.round(a + side * (u + d));
+        if (xi >= 0 && xi < w && xo >= 0 && xo < w) { inn += q[y * w + xi]; aus += q[y * w + xo]; n++; }
       }
-    } else {
-      // nur eine Seite gefunden (z. B. ganz oben an der Ellipse)
-      r = a >= 0 ? a : b; c = (a >= 0 ? ca : cb) * 0.6;
+      if (n) c = 0.7 * c + 0.3 * clamp((inn - aus) / (2 * n), 0, 1);
     }
-    hw[y] = r; wt[y] = c;
+    wt[y] = clamp(c, 0.05, 1);
+    if (m.xL[y] >= 0) rL[y] = a - m.xL[y];
+    if (m.xR[y] >= 0) rR[y] = m.xR[y] - a;
     if (top < 0) top = y;
     bottom = y;
+    sL += m.cL[y]; sR += m.cR[y]; nb++;
   }
-  if (top < 0 || bottom - top < 24) return null;
-  // Über Farbwechsel hinweg: läuft die Kontur oben oder unten auf beiden Seiten
-  // spiegelgleich weiter (Kanten im selben Abstand zur Mittellinie), gehört das noch zum Stück.
-  for (const dir of [1, -1]) {
-    const ext = symmetrischVerlaengern(ctx, achse, hw, wt, top, bottom, dir, Math.round((bottom - top) * 0.9));
-    if (dir > 0) bottom += ext; else top -= ext;
-  }
+  if (nb < 20 || bottom - top < 24) return null;
+  return profilBerechnen(ctx, achse, hw, wt, top, bottom, hint, { rL, rR, cL: m.cL, cR: m.cR, leit: sL >= sR ? -1 : 1, qL: sL / nb, qR: sR / nb });
+}
 
+function profilBerechnen(ctx, achse, hw, wt, top, bottom, hint, info) {
+  const { h } = ctx;
   // Öffnung und Boden erscheinen als Ellipsen; die Silhouette reicht oben und unten über die
   // eigentliche Rand- bzw. Bodenhöhe hinaus. Wie weit, folgt aus der Kamerageometrie
   // (Lochkamera: Neigung des Handys vom Lagesensor, Brennweite). Ohne Sensor (Galeriefoto)
@@ -764,9 +862,9 @@ function auswerten(ctx, uL, uR, hint) {
   const silh = P.silhouette(Ys, Float64Array.from(glatt, v => v * HD), h);
   const aMitte = e + Math.atan(((randZeile + bodenZeile) / 2 - geo.cy) / geo.f);
   return {
-    achse, rL, rR, cL, cR, uL, uR, leit, qL, qR, henkelSeite, henkelZeile, henkelSpans,
+    ...info, achse,
     top, bottom, randZeile, bodenZeile, hImg, hTrue, neigung: Math.abs(Math.sin(aMitte)), blick: e,
-    profil: glatt, anteil, ergaenzt: ergaenzt / M, form, silh, sdModell: form.sd,
+    profil: glatt, anteil, ergaenzt: ergaenzt / M, form, silh, sdModell: form.sd, fitRest: fitRest(m48, w48, form.profil),
     // Bildpunkt → Lage am Stück (x: Abstand zur Achse, t: 0 = Rand … 1 = Boden; beides in Höhen)
     tVon: y => (Yr - P.Y(y)) / HD,
     xVon: (dx, y) => (dx * P.zc(P.Y(y))) / geo.f / HD,
@@ -837,165 +935,25 @@ function lochkamera(geo, e) {
 
 // Auf der Henkelseite: erste Stelle von der Achse aus, an der ein Stück Hintergrund beginnt
 // (das Henkelloch) – dort endet der Körper.
-function koerperKante(ctx, side, us) {
-  const { w, h, q, achse } = ctx;
-  const out = Int32Array.from(us), loch = new Uint8Array(h);
-  const spanA = new Int32Array(h).fill(-1), spanB = new Int32Array(h).fill(-1);
-  let first = -1, last = -1;
-  for (let y = 0; y < h; y++) if (us[y] >= 0) { if (first < 0) first = y; last = y; }
-  for (let y = 0; y < h; y++) {
-    const u0 = us[y];
-    if (u0 < 8) continue;
-    const ax = Math.round(achse(y));
-    const at = d => { const x = ax + side * d; return x >= 0 && x < w ? q[y * w + x] : -1; };
-    const minD = Math.max(3, Math.round(u0 * 0.4));
-    let d = u0 - 1;
-    while (d > minD && at(d) > -0.4) d--; // durch den Henkel
-    if (d <= minD || u0 - d > u0 * 0.5) continue;
-    let g = d;
-    while (g > minD && at(g) <= -0.1) g--; // durch das Loch
-    if (d - g < 3 || g <= minD) continue;
-    out[y] = g;
-    loch[y] = 1;
-    spanA[y] = d + 1; spanB[y] = u0;
-  }
-  // nur zusammenhängende Strecken im mittleren Bereich gelten (sonst z. B. dunkle Öffnung)
-  const minLen = Math.max(6, Math.round((last - first) * 0.06));
-  for (let y = 0; y < h;) {
-    if (!loch[y]) { y++; continue; }
-    let e = y;
-    while (e < h && loch[e]) e++;
-    const mitte = (y + e) / 2;
-    if (e - y < minLen || mitte < first + 0.1 * (last - first) || mitte > first + 0.92 * (last - first)) {
-      for (let k = y; k < e; k++) { loch[k] = 0; out[k] = us[k]; spanA[k] = spanB[k] = -1; }
-      y = e;
-      continue;
-    }
-    // Ansätze oberhalb und unterhalb des Lochs: Henkel geht dort in den Körper über
-    const L = Math.round((last - first) * 0.12);
-    for (const [start, step, ref] of [[y - 1, -1, out[y]], [e, 1, out[e - 1]]]) {
-      for (let k = start, n = 0; n < L && k >= 0 && k < h && us[k] >= 0; k += step, n++) {
-        if (us[k] <= ref * 1.08 + 2) break;
-        out[k] = ref; spanA[k] = ref + 1; spanB[k] = us[k];
-      }
-    }
-    y = e;
-  }
-  return { u: out, loch, spanA, spanB };
+// Erwartete Kontur (für den zweiten Durchgang): halbe Breite je Zeile und Spielraum
+// Wie weit weicht die gemessene Kontur von der passendsten Formfamilie ab (Anteil der Höhe)?
+function fitRest(m, w, post) {
+  let s = 0, n = 0;
+  for (let i = 0; i < m.length; i++) if (w[i] > 0.05) { s += w[i] * Math.abs(m[i] - post[i]); n += w[i]; }
+  return n ? s / n : 1;
 }
 
-function innereKante(ctx, achse, y, side, rAussen, rAndere) {
-  const { w, q, E } = ctx;
-  const a = achse(y);
-  const at = d => { const x = Math.round(a + side * d); return x >= 0 && x < w ? q[y * w + x] : -1; };
-  // nur in der Nähe der Breite der anderen Seite suchen (Glanzlichter weiter innen stören sonst)
-  for (let d = Math.max(3, Math.round(rAndere * 0.7)); d < Math.min(rAussen - 4, rAndere * 1.35); d++) {
-    if (at(d) < -0.4 && at(d + 1) < -0.4 && at(d + 2) < -0.4) {
-      const x = Math.round(a + side * d);
-      let e = 0;
-      for (let k = -2; k <= 1; k++) { const xx = x - side * k; if (xx >= 0 && xx < w) e = Math.max(e, E[y * w + xx]); }
-      return { r: d - 0.5, c: clamp(0.35 + 0.65 * Math.min(1, e / 0.7), 0, 1) };
-    }
-  }
-  return null;
-}
-
-function symmetrischVerlaengern(ctx, achse, hw, wt, top, bottom, dir, maxExt) {
-  const { w, h, E } = ctx;
-  const start = dir > 0 ? bottom : top;
-  const w0 = hw[start];
-  const rows = [];
-  for (let k = 1; k <= maxExt; k++) { const y = start + dir * k; if (y < 0 || y >= h) break; rows.push(y); }
-  if (rows.length < 3 || !(w0 > 3)) return 0;
-  const U = Math.ceil(w0 * 1.3 + 6);
-  const NEG = -1e9;
-  const ed = (y, x) => {
-    let m = 0;
-    for (let d = -1; d <= 1; d++) { const xx = Math.round(x) + d; if (xx >= 0 && xx < w) m = Math.max(m, E[y * w + xx]); }
-    return m;
-  };
-  const pen = d => (d <= 2 ? 0.6 * d * d : 2.4 + 1.1 * (d - 2));
-  const J = Math.max(4, Math.round(w0 * 0.12));
-  let prev = new Float32Array(U + 1).fill(NEG);
-  for (let u = 2; u <= U; u++) prev[u] = -pen(Math.abs(u - w0)) * 0.5;
-  const from = [];
-  let cum = 0, bestK = 0, bestCum = 0;
-  for (let k = 0; k < rows.length; k++) {
-    const y = rows[k], a = achse(y);
-    // Kantenniveau des Hintergrunds in dieser Zeile
-    const bgE = [];
-    for (let x = 0; x < w; x += 2) if (Math.abs(x - a) > w0 * 1.35 + 4) bgE.push(E[y * w + x]);
-    bgE.sort((p, q) => p - q);
-    const base = (bgE.length ? bgE[Math.floor(bgE.length * 0.6)] : 0) + 0.12;
-    const cur = new Float32Array(U + 1).fill(NEG);
-    const fr = new Int16Array(U + 1);
-    let rowBest = NEG;
-    for (let u = 2; u <= U; u++) {
-      if (a - u < 0 || a + u >= w) continue;
-      const eL = ed(y, a - u), eR = ed(y, a + u);
-      const sc = Math.min(eL, eR) + 0.25 * Math.max(eL, eR) - base;
-      let b = NEG, arg = -1;
-      for (let v = Math.max(2, u - J); v <= Math.min(U, u + J); v++) { const c = prev[v] - pen(Math.abs(v - u)); if (c > b) { b = c; arg = v; } }
-      cur[u] = b + sc;
-      fr[u] = arg;
-      if (cur[u] > rowBest) rowBest = cur[u];
-    }
-    from.push(fr);
-    prev = cur;
-    cum = rowBest;
-    if (cum > bestCum + 1e-6) { bestCum = cum; bestK = k + 1; }
-  }
-  if (bestK < 3 || bestCum / bestK < 0.12) return 0;
-  // Weg zurückverfolgen (ab der besten Zeile)
-  // dafür einmal neu rechnen bis bestK und Endzustand wählen
-  let u = -1, best = NEG;
-  {
-    // Endzustand: höchster Wert in Zeile bestK-1 – erneut aus `from` rekonstruieren ist nur mit
-    // gespeicherten Werten möglich; deshalb Pfad über die Vorgänger ab dem besten Endpunkt suchen
-    let p = new Float32Array(U + 1).fill(NEG);
-    for (let uu = 2; uu <= U; uu++) p[uu] = -pen(Math.abs(uu - w0)) * 0.5;
-    for (let k = 0; k < bestK; k++) {
-      const y = rows[k], a = achse(y);
-      const bgE = [];
-      for (let x = 0; x < w; x += 2) if (Math.abs(x - a) > w0 * 1.35 + 4) bgE.push(E[y * w + x]);
-      bgE.sort((p1, q1) => p1 - q1);
-      const base = (bgE.length ? bgE[Math.floor(bgE.length * 0.6)] : 0) + 0.12;
-      const c = new Float32Array(U + 1).fill(NEG);
-      for (let uu = 2; uu <= U; uu++) {
-        if (a - uu < 0 || a + uu >= w) continue;
-        const v = from[k][uu];
-        if (v < 0) continue;
-        c[uu] = p[v] - pen(Math.abs(v - uu)) + Math.min(ed(y, a - uu), ed(y, a + uu)) + 0.25 * Math.max(ed(y, a - uu), ed(y, a + uu)) - base;
-      }
-      p = c;
-    }
-    for (let uu = 2; uu <= U; uu++) if (p[uu] > best) { best = p[uu]; u = uu; }
-  }
-  for (let k = bestK - 1; k >= 0 && u >= 2; k--) {
-    const y = rows[k];
-    hw[y] = u; wt[y] = 0.3;
-    u = from[k][u];
-  }
-  return bestK;
-}
-
-// Erwartete Kontur je Seite (für den zweiten Durchgang)
 function erwartungAus(erg, h) {
-  const mk = side => {
-    const u = new Float32Array(h).fill(-1), s = new Float32Array(h);
-    for (let y = 0; y < h; y++) {
-      const wv = erg.silh[y];
-      if (wv < 1) continue;
-      u[y] = wv; // Abstand zur Achse (die Achse ist im zweiten Durchgang dieselbe)
-      const t = clamp(erg.tVon(y), 0, 1);
-      const sd = erg.sdModell[Math.round(t * (erg.sdModell.length - 1))] * erg.hTrue;
-      s[y] = Math.max(2.5, 2 * sd + 0.012 * erg.hTrue);
-    }
-    // Auf der Henkelseite darf die Kontur weiter hinaus (wird beim Zusammenführen erkannt)
-    if (erg.henkelSeite === side) for (let y = 0; y < h; y++) if (erg.henkelZeile[y]) s[y] *= 4;
-    return { u, s, kraft: 2.2 };
-  };
-  return { links: mk(-1), rechts: mk(1) };
+  const u = new Float32Array(h).fill(-1), s = new Float32Array(h);
+  for (let y = 0; y < h; y++) {
+    const wv = erg.silh[y];
+    if (wv < 1) continue;
+    u[y] = wv;
+    const t = clamp(erg.tVon(y), 0, 1);
+    const sd = erg.sdModell[Math.round(t * (erg.sdModell.length - 1))] * erg.hTrue;
+    s[y] = Math.max(2.5, 2 * sd + 0.012 * erg.hTrue);
+  }
+  return { u, s, kraft: 1.5 };
 }
 
 // ---------------------------------------------------------------------------
@@ -1031,19 +989,9 @@ function henkelFinden(ctx, erg, mitPinsel) {
     for (let x = 0; x < w; x++) {
       const k = y * w + x;
       if (weit[k]) continue;
-      if (q[k] <= thr && ctx.q1[k] <= thr) continue;
+      if (q[k] <= thr) continue;
       if (q[k] < 0.9 && ref.some(r => 0.5 * (L[k] - r[0]) ** 2 + (A[k] - r[1]) ** 2 + (B[k] - r[2]) ** 2 < 64)) continue;
       kand[k] = 1;
-    }
-  }
-  // Henkelquerschnitte, die beim Suchen der Körperkante gefunden wurden
-  for (const side of [-1, 1]) {
-    const sp = erg.henkelSpans?.[side];
-    if (!sp) continue;
-    for (let y = 0; y < h; y++) {
-      if (sp.spanA[y] < 0) continue;
-      const a = Math.round(ctx.achse(y));
-      for (let d = sp.spanA[y]; d <= sp.spanB[y]; d++) { const x = a + side * d; if (x >= 0 && x < w && !koerper[y * w + x]) kand[y * w + x] = 1; }
     }
   }
   const sauber = dilate(erode(kand, w, h, 1), w, h, 1);
@@ -1141,6 +1089,9 @@ function ergebnis(erg, henkel, { IW, IH, x0, y0, w, h }) {
       guete: round4(Math.max(erg.qL, erg.qR)),
       ergaenzt: round4(erg.ergaenzt),
       henkelSeite: henkel ? sideName(henkel.side) : null,
+      // schwache Kanten oder viel aus dem Formwissen ergänzt: Umriss bitte prüfen
+      // passt schlecht zu jeder bekannten Form oder viel ergänzt: Umriss bitte prüfen
+      unsicher: erg.fitRest > 0.006 || erg.ergaenzt > 0.15,
     },
     outline: {
       koerper,
@@ -1161,45 +1112,6 @@ const round4 = v => Math.round(v * 10000) / 10000;
 // ---------------------------------------------------------------------------
 // Bildhilfen
 // ---------------------------------------------------------------------------
-
-function modus(vals, w) {
-  const bins = new Map();
-  for (const v of vals) { const b = Math.round(v / 2); bins.set(b, (bins.get(b) || 0) + 1); }
-  let mb = 0, mc = -1;
-  for (const [b] of bins) {
-    const c = (bins.get(b - 1) || 0) + bins.get(b) + (bins.get(b + 1) || 0);
-    if (c > mc) { mc = c; mb = b; }
-  }
-  const near = vals.filter(v => Math.abs(v / 2 - mb) <= 1.5);
-  return near.length ? near.reduce((a, b) => a + b, 0) / near.length : w / 2;
-}
-
-function otsu(values) {
-  let max = 0;
-  for (const v of values) if (v > max) max = v;
-  const bins = 128;
-  const hist = new Float64Array(bins);
-  for (const v of values) hist[Math.min(bins - 1, Math.floor((v / (max || 1)) * bins))]++;
-  const total = values.length;
-  let sumAll = 0;
-  for (let i = 0; i < bins; i++) sumAll += i * hist[i];
-  let wB = 0, sumB = 0, best = 0, bestI = 0;
-  for (let i = 0; i < bins; i++) {
-    wB += hist[i];
-    if (!wB || wB === total) continue;
-    sumB += i * hist[i];
-    const between = wB * (total - wB) * (sumB / wB - (sumAll - sumB) / (total - wB)) ** 2;
-    if (between > best) { best = between; bestI = i; }
-  }
-  return ((bestI + 1) / bins) * max;
-}
-
-function pinselMaske(M, brush, w, h, IW, IH, x0, y0) {
-  if (!brush.length) return;
-  const q = Float32Array.from(M, v => (v ? 1 : 0));
-  pinsel(q, brush, w, h, IW, IH, x0, y0);
-  for (let k = 0; k < M.length; k++) M[k] = q[k] > 0 ? 1 : 0;
-}
 
 export function erode(A, W, H, r) {
   let cur = A;

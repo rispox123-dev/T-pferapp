@@ -394,7 +394,7 @@ async function viewPiece(id) {
   const p = await db.get('pieces', id);
   if (!p) return notFound();
   // Ältere Blaupausen einmalig mit der neuen Formerkennung neu berechnen
-  if (p.blueprint && p.blueprint.version !== 2 && p.photos?.includes(p.blueprint.photoId)) {
+  if (p.blueprint && (p.blueprint.version || 0) < 3 && p.photos?.includes(p.blueprint.photoId)) {
     try {
       p.blueprint = await createBlueprint(p.blueprint.photoId, p.blueprint);
       await db.put('pieces', p);
@@ -415,6 +415,7 @@ async function viewPiece(id) {
     ${p.blueprint ? `<div class="card bp-card">
         <div class="bp-head"><h2>Blaupause</h2><span class="small muted">Maß oder Form antippen</span></div>
         <div id="bp"></div>
+        ${umrissPruefen(p)}
         <div class="btn-row" style="margin:12px 0 2px">
           <a class="btn small primary" href="#/werkstueck/${id}/blaupause">Groß anzeigen</a>
           <a class="btn small" href="#/werkstueck/${id}/umriss">Umriss anpassen</a>
@@ -625,14 +626,35 @@ function blueprintSvg(p, preview, interactive) {
   return renderBlueprint(bp, { ...bpData(p), title: p.name, info: bpInfo(p), interactive, seed: hashSeed(p.id || p.name) });
 }
 
-function makeBlueprint(photoId, crop, sens, result, prev, brush = [], gruppe = null) {
+// Foto mit eingezeichnetem Umriss: So hat die App das Stück erkannt
+function umrissPruefen(p) {
+  const u = p.blueprint?.umriss;
+  if (!u || !p.blueprint.photoId) return '';
+  const pfad = pts => pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x} ${y}`).join('') + 'Z';
+  const unsicher = p.blueprint.quality?.unsicher;
+  return `<div class="bp-pruefen${unsicher ? ' unsicher' : ''}">
+    <a href="#/werkstueck/${p.id}/umriss" class="bp-pruefen-bild" aria-label="Erkannten Umriss prüfen">
+      ${thumb(p.blueprint.photoId, { full: true })}
+      <svg viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true"><path d="${pfad(u.koerper)}"/>${u.henkel.map(h => `<path d="${pfad(h)}" class="h"/>`).join('')}</svg>
+    </a>
+    <p class="small">${unsicher ? '<strong>Bitte prüfen:</strong> Der Umriss ist unsicher.' : 'So hat die App dein Stück erkannt.'}
+      ${p.blueprint.form?.label ? `Form: ${esc(p.blueprint.form.label)}.` : ''} Stimmt etwas nicht? Antippen und korrigieren.</p>
+  </div>`;
+}
+
+function makeBlueprint(photoId, crop, sens, result, prev, brush = [], gruppe = null, punkt = null) {
   return {
-    version: 2,
-    photoId, crop, sens, brush, gruppe,
+    version: 3,
+    photoId, crop, sens, brush, gruppe, punkt,
     profile: result.profile,
     handles: result.handles,
     form: result.form,
     quality: result.quality,
+    // erkannter Umriss im Foto (zum Nachprüfen auf der Werkstückseite)
+    umriss: {
+      koerper: result.outline.koerper.filter((_, i) => i % 3 === 0).map(([x, y]) => [Math.round(x * 1000) / 1000, Math.round(y * 1000) / 1000]),
+      henkel: result.outline.henkel.map(l => l.filter((_, i) => i % 2 === 0).map(([x, y]) => [Math.round(x * 1000) / 1000, Math.round(y * 1000) / 1000])),
+    },
     tilt: result.tilt,
     points: findPoints(result.profile),
     values: prev?.values || {},
@@ -669,11 +691,12 @@ async function createBlueprint(photoId, prev) {
   const src = await loadForAnalysis(photo.blob);
   const same = prev?.photoId === photoId;
   const gruppe = same ? prev.gruppe || null : null;
+  const punkt = same ? prev.punkt || null : null;
   const crop = same && prev.crop ? prev.crop : cropFromGuide(photo.kamera?.guide);
   const sens = same ? prev.sens ?? DEFAULT_SENS : DEFAULT_SENS;
   const brush = same ? prev.brush || [] : [];
-  const result = analyze(src, { crop, sens, brush, hint: erkennungsHinweis(photo, src, gruppe) });
-  return makeBlueprint(photoId, crop, sens, result, prev, brush, gruppe);
+  const result = analyze(src, { crop, sens, brush, hint: { ...erkennungsHinweis(photo, src, gruppe), punkt: punkt || undefined } });
+  return makeBlueprint(photoId, crop, sens, result, prev, brush, gruppe, punkt);
 }
 
 function measureDialog({ title, isHeight, value, est, showPos, pos, posEst, label, removeText }) {
@@ -830,6 +853,7 @@ async function viewBlueprintEditor(id) {
     sens: prev?.sens ?? DEFAULT_SENS,
     brush: gleich ? structuredClone(prev.brush || []) : [],
     gruppe: gleich ? prev.gruppe || null : null,
+    punkt: gleich ? prev.punkt || null : null,
     mode: 'rahmen',
     brushSize: 5,
     src: null,
@@ -838,7 +862,7 @@ async function viewBlueprintEditor(id) {
   };
 
   $app.innerHTML = `
-    <div class="info-box"><p>Orange ist der erkannte Umriss, die gestrichelte Linie die Mittellinie. Die besser belichtete Seite (<strong>Leitseite</strong>) gibt die Form vor; blau markierte Stellen hat die App aus ihrem Formwissen ergänzt. Fehlt etwas (z. B. ein Henkel), male es mit <strong>Hinzufügen</strong> dazu; Schatten nimmst du mit <strong>Entfernen</strong> weg.</p></div>
+    <div class="info-box"><p>Orange ist der erkannte Umriss, die gestrichelte Linie die Mittellinie. Die besser belichtete Seite (<strong>Leitseite</strong>) gibt die Form vor; blau markierte Stellen hat die App aus ihrem Formwissen ergänzt. Hat sie ein anderes Objekt erwischt, <strong>tippe auf dein Stück</strong>. Fehlt etwas (z. B. ein Henkel), male es mit <strong>Hinzufügen</strong> dazu; Schatten nimmst du mit <strong>Entfernen</strong> weg.</p></div>
     <div class="bp-choice">${p.photos.map(ph => `<button type="button" data-photo-id="${ph}" class="${ph === st.photoId ? 'active' : ''}" aria-label="Dieses Foto verwenden">${thumb(ph)}</button>`).join('')}
       ${kameraVerfuegbar() ? `<button type="button" class="bp-neu" id="bp-foto" aria-label="Neues Foto für die Blaupause aufnehmen">${ICON_GUIDE}<span>Neues Foto</span></button>` : ''}</div>
     <label class="field"><span>Art des Stücks</span><select id="bp-gruppe">
@@ -946,6 +970,15 @@ async function viewBlueprintEditor(id) {
       linie(o.achse, false);
       ctx.setLineDash([]);
     }
+    if (st.punkt) {
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(st.punkt.x * w, st.punkt.y * h, 9, 0, Math.PI * 2);
+      ctx.moveTo(st.punkt.x * w - 14, st.punkt.y * h); ctx.lineTo(st.punkt.x * w + 14, st.punkt.y * h);
+      ctx.moveTo(st.punkt.x * w, st.punkt.y * h - 14); ctx.lineTo(st.punkt.x * w, st.punkt.y * h + 14);
+      ctx.stroke();
+    }
     // Markierung (halbtransparent), Radierer-Striche nehmen sie wieder weg
     if (st.brush.length) {
       brushCtx.clearRect(0, 0, brushLayer.width, brushLayer.height);
@@ -980,7 +1013,7 @@ async function viewBlueprintEditor(id) {
   const run = () => {
     let error = '';
     try {
-      st.result = analyze(st.src, { crop: st.crop, sens: st.sens, brush: st.brush, hint: erkennungsHinweis(st.photo, st.src, st.gruppe) });
+      st.result = analyze(st.src, { crop: st.crop, sens: st.sens, brush: st.brush, hint: { ...erkennungsHinweis(st.photo, st.src, st.gruppe), punkt: st.punkt || undefined } });
     } catch (err) {
       st.result = null;
       error = err.message;
@@ -990,7 +1023,7 @@ async function viewBlueprintEditor(id) {
     const erkannt = r ? `Erkannt: ${r.form.label} · Leitseite ${r.quality.leitseite}${r.handles.length ? ` · Henkel ${r.quality.henkelSeite || ''}` : ''}${r.quality.ergaenzt > 0.03 ? ` · ${Math.round(r.quality.ergaenzt * 100)} % aus Formwissen ergänzt` : ''}. ` : '';
     statusEl.textContent = error
       || erkannt + (st.mode === 'rahmen'
-        ? 'Passt der Umriss nicht, verschiebe den Rahmen oder die Empfindlichkeit – oder korrigiere mit „Hinzufügen“ / „Entfernen“.'
+        ? 'Falsches Objekt erwischt? Tippe auf dein Stück. Sonst den Rahmen enger ziehen oder mit „Hinzufügen“ / „Entfernen“ korrigieren.'
         : st.mode === 'pinsel'
           ? 'Male mit dem Finger über Teile, die fehlen (z. B. einen Henkel).'
           : 'Male über Teile, die nicht zum Stück gehören (z. B. Schatten).');
@@ -1033,7 +1066,14 @@ async function viewBlueprintEditor(id) {
     const cand = [['x0', Math.abs(x - c.x0) / tx, inY], ['x1', Math.abs(x - c.x1) / tx, inY], ['y0', Math.abs(y - c.y0) / ty, inX], ['y1', Math.abs(y - c.y1) / ty, inX]]
       .filter(a => a[2] && a[1] < 1)
       .sort((a, b) => a[1] - b[1]);
-    if (!cand.length) return;
+    if (!cand.length) {
+      // Antippen im Rahmen: dieses Stück ist gemeint (falls die App ein Nachbarobjekt erwischt)
+      if (x > c.x0 && x < c.x1 && y > c.y0 && y < c.y1) {
+        st.punkt = { x: Math.round(x * 1000) / 1000, y: Math.round(y * 1000) / 1000 };
+        run();
+      }
+      return;
+    }
     drag = cand[0][0];
     canvas.setPointerCapture(e.pointerId);
     e.preventDefault();
@@ -1089,6 +1129,7 @@ async function viewBlueprintEditor(id) {
     st.photoId = b.dataset.photoId;
     st.crop = null;
     st.brush = [];
+    st.punkt = null;
     $app.querySelectorAll('.bp-choice button').forEach(x => x.classList.toggle('active', x === b));
     load();
   });
@@ -1099,7 +1140,7 @@ async function viewBlueprintEditor(id) {
   $app.querySelector('#cancel').onclick = () => $back.click();
   applyBtn.onclick = async () => {
     if (!st.result) return;
-    p.blueprint = makeBlueprint(st.photoId, st.crop, st.sens, st.result, prev, st.brush, st.gruppe);
+    p.blueprint = makeBlueprint(st.photoId, st.crop, st.sens, st.result, prev, st.brush, st.gruppe, st.punkt);
     p.updatedAt = new Date().toISOString();
     await db.put('pieces', p);
     toast('Blaupause gespeichert');
@@ -1735,11 +1776,11 @@ async function viewMore() {
       <h2>So funktioniert die Blaupause</h2>
       <ol class="small" style="padding-left:20px;margin:0">
         <li>Werkstück → Fotos → <strong>„Foto für Blaupause“</strong>. Eine Maske zeigt, wohin das Stück gehört: Handy senkrecht, Kamera auf halber Höhe, Henkel zur Seite. Die Wasserwaage wird grün, wenn die Haltung stimmt.</li>
-        <li>Die App trennt Stück und Hintergrund, teilt das Stück an der Mittellinie und nimmt die besser belichtete Seite als Vorlage für die andere. Was im Schatten, in Spiegelungen oder hinter Farbwechseln verloren geht, ergänzt sie aus ihrem Formwissen (über 3000 typische Becher, Tassen, Schüsseln und Vasen).</li>
+        <li>Die App sucht die Mittelachse des Stücks und verfolgt den Umriss auf beiden Seiten gemeinsam – so stören Bilder, Regale oder andere Gefäße daneben kaum. Die besser belichtete Seite dient als Vorlage für die andere. Was im Schatten, in Spiegelungen oder hinter Farbwechseln verloren geht, ergänzt sie aus ihrem Formwissen (über 3000 typische Becher, Tassen, Schüsseln und Vasen).</li>
         <li>Die Blaupause wird leicht von oben gezeichnet, damit Öffnung und Boden als Ellipsen zu sehen sind. Rand, Bauch, Hals, Fußansatz und Boden werden markiert.</li>
         <li>Tippe ein Maß an, um es einzutragen. Schon ein Maß (z. B. die Höhe) reicht – die übrigen werden aus dem Foto geschätzt (≈).</li>
         <li>Fehlt eine Stelle (z. B. eine Rille)? Tippe auf die Form an dieser Höhe. Stellen lassen sich auch umbenennen oder ausblenden.</li>
-        <li>Stimmt der Ausschnitt nicht (z. B. Schatten dabei, Teil fehlt)? „Umriss anpassen“ → mit „Hinzufügen“ oder „Entfernen“ darübermalen.</li>
+        <li>Auf der Werkstückseite siehst du klein, welchen Umriss die App erkannt hat. Stimmt er nicht? „Umriss anpassen“ → auf dein Stück tippen (falls ein Nachbarobjekt erwischt wurde), Rahmen enger ziehen oder mit „Hinzufügen“ / „Entfernen“ darübermalen.</li>
         <li>Vor dem Töpfern: Werkstück öffnen → „Groß anzeigen“. Der Bildschirm bleibt dabei an.</li>
       </ol>
     </div>

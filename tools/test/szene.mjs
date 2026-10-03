@@ -56,6 +56,26 @@ export function szene(seed, opts = {}) {
   const el = U(r, 25, 60) * Math.PI / 180;
   s.licht = { dir: norm([Math.sin(az) * Math.cos(el), Math.sin(el), Math.cos(az) * Math.cos(el)]), I: U(r, 0.85, 1.15), amb: U(r, 0.22, 0.42), weich: U(r, 5, 14), fill: U(r, 0, 0.18) };
 
+  // Unordnung wie in echten Wohnungen: Bild an der Wand, Nachbargefäß, Regalkante, Putz
+  if (opts.unordnung) {
+    const rK = Math.max(...R);
+    s.wandAbstand = U(r, 3, 10);
+    s.putz = U(r, 0.06, 0.16);
+    s.regal = r() < 0.75 ? { vorn: U(r, rK + 2, rK + 9), dick: U(r, 1.6, 2.6) } : null;
+    s.stoerer = [];
+    const seite = r() < 0.5 ? -1 : 1;
+    if (r() < 0.8) {
+      const bw = U(r, 8, 13), bh = U(r, 11, 17);
+      const x0 = seite * (rK + (henkel ? H * 0.4 : 0) + U(r, 1, 9));
+      s.stoerer.push({ art: 'bild', min: [seite > 0 ? x0 : x0 - bw, 0, -s.wandAbstand + 0.2], max: [seite > 0 ? x0 + bw : x0, bh, -s.wandAbstand + 0.6], farbe: [pick(r, [[90, 120, 160], [170, 140, 110], [60, 70, 80]]), pick(r, [[40, 35, 40], [120, 90, 70], [200, 190, 170]])] });
+    }
+    if (r() < 0.6) {
+      const rr = U(r, 3, 7);
+      s.stoerer.push({ art: 'zyl', x: -seite * (rK + rr + U(r, 3, 14) + (henkel ? H * 0.4 : 0)), z: U(r, -s.wandAbstand + rr, 2), r: rr, h: U(r, 8, 22), farbe: pick(r, [[240, 238, 232], [225, 215, 195], [120, 140, 150], [200, 120, 90]]) });
+    }
+    s.versatz = U(r, -0.5, 0.5) * rK; // Stück nicht in der Bildmitte
+  }
+
   // Henkel: Bogen seitlich in der Ebene z = 0 (leicht zur Kamera gedreht)
   if (henkel) {
     const side = r() < 0.5 ? -1 : 1;
@@ -98,7 +118,7 @@ export function szene(seed, opts = {}) {
     const horiz = s.frontal ? dist : dist * Math.cos(s.blick);
     s.cam = [0, camY, horiz];
     // auf die Mitte des Stücks zielen (Bildmitte = optische Achse, wie beim Handy)
-    const fwd = norm(sub([0, zielY, 0], s.cam));
+    const fwd = norm(sub([s.versatz || 0, zielY, 0], s.cam));
     s.neigung = Math.asin(-fwd[1]); // Blick nach unten (Lagesensor)
     let right = norm(cross(fwd, [0, 1, 0]));
     let up = cross(right, fwd);
@@ -201,12 +221,65 @@ function strahl(s, o, d) {
       t += Math.max(h * 0.8, 0.004);
     }
   }
-  if (hit) return hit;
-  // Tisch (y = 0) bzw. Wand (z = -wandAbstand)
+  let best = hit || { t: Infinity };
+  // Störer (Bild an der Wand, Nachbargefäß)
+  for (const st of s.stoerer || []) {
+    const h = st.art === 'bild' ? schnittBox(o, d, st.min, st.max) : schnittZyl(o, d, st);
+    if (h && h.t < best.t) best = { t: h.t, p: add(o, mul(d, h.t)), n: h.n, stoerer: st };
+  }
+  if (best.obj && best.t === hit.t) return best;
+  // Tisch/Regal (y = 0), Regalkante, Wand (z = -wandAbstand)
   const tt = d[1] < 0 ? -o[1] / d[1] : Infinity;
+  const pt = add(o, mul(d, tt));
+  if (tt < best.t && (!s.regal || pt[2] <= s.regal.vorn)) best = { t: tt, p: pt, tisch: true };
+  if (s.regal && d[2] < 0) {
+    const tf = (s.regal.vorn - o[2]) / d[2];
+    const pf = add(o, mul(d, tf));
+    if (tf > 0 && tf < best.t && pf[1] <= 0 && pf[1] >= -s.regal.dick) best = { t: tf, p: pf, kante: true };
+  }
   const tw = d[2] < 0 ? (-s.wandAbstand - o[2]) / d[2] : Infinity;
-  if (tt < tw) return { t: tt, p: add(o, mul(d, tt)), tisch: true };
-  return { t: tw, p: add(o, mul(d, tw)), wand: true };
+  if (tw < best.t) best = { t: tw, p: add(o, mul(d, tw)), wand: true };
+  return best;
+}
+
+function schnittBox(o, d, mn, mx) {
+  let t0 = -Infinity, t1 = Infinity, ax = -1;
+  for (let i = 0; i < 3; i++) {
+    if (Math.abs(d[i]) < 1e-9) { if (o[i] < mn[i] || o[i] > mx[i]) return null; continue; }
+    let a = (mn[i] - o[i]) / d[i], b = (mx[i] - o[i]) / d[i];
+    if (a > b) [a, b] = [b, a];
+    if (a > t0) { t0 = a; ax = i; }
+    t1 = Math.min(t1, b);
+  }
+  if (t0 > t1 || t0 < 0) return null;
+  const n = [0, 0, 0]; n[ax] = d[ax] > 0 ? -1 : 1;
+  return { t: t0, n };
+}
+
+function schnittZyl(o, d, z) {
+  const ox = o[0] - z.x, oz = o[2] - z.z;
+  const a = d[0] ** 2 + d[2] ** 2, b = 2 * (ox * d[0] + oz * d[2]), c = ox * ox + oz * oz - z.r * z.r;
+  const disc = b * b - 4 * a * c;
+  let best = null;
+  if (disc > 0) {
+    const t = (-b - Math.sqrt(disc)) / (2 * a);
+    const y = o[1] + t * d[1];
+    if (t > 0 && y >= 0 && y <= z.h) best = { t, n: norm([ox + t * d[0], 0, oz + t * d[2]]) };
+  }
+  if (d[1] < 0) {
+    const t = (z.h - o[1]) / d[1];
+    const px = ox + t * d[0], pz = oz + t * d[2];
+    if (t > 0 && px * px + pz * pz <= z.r * z.r && (!best || t < best.t)) best = { t, n: [0, 1, 0] };
+  }
+  return best;
+}
+
+// weiches Rauschen für Putz und Bilder
+function rauschen(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi;
+  const h = (a, b) => hash3(a / 7.3, b / 7.3, 0.1);
+  const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+  return (h(xi, yi) * (1 - sx) + h(xi + 1, yi) * sx) * (1 - sy) + (h(xi, yi + 1) * (1 - sx) + h(xi + 1, yi + 1) * sx) * sy;
 }
 
 function farbe(s, hit, d) {
@@ -240,11 +313,25 @@ function farbe(s, hit, d) {
     return alb.map(c => c * (diff + fill + amb) + spec + fres);
   }
   const p = hit.p;
+  if (hit.stoerer || hit.kante) {
+    let alb, n = hit.n || [0, 0, 1];
+    if (hit.kante) alb = (s.tisch.holz || s.tisch.c || [190, 170, 140]).map(c => lin(c) * 0.85);
+    else if (hit.stoerer.art === 'bild') {
+      const st = hit.stoerer, f = (p[1] - st.min[1]) / (st.max[1] - st.min[1]);
+      const turm = rauschen(p[0] * 0.9, 0.5) > 0.55 && f < 0.75 + 0.2 * rauschen(p[0] * 2, 3);
+      const c = turm ? st.farbe[1] : st.farbe[0].map((v, i) => v * (0.6 + 0.6 * f) + st.farbe[1][i] * 0.2);
+      alb = c.map(v => lin(Math.min(255, v * (0.85 + 0.3 * rauschen(p[0] * 3, p[1] * 3)))));
+    } else alb = hit.stoerer.farbe.map(lin);
+    const sh = schatten(s, add(p, mul(n, 0.02)), L);
+    const diff = Math.max(0, dot(n, L)) * sh * s.licht.I;
+    return alb.map(c => c * (diff * 0.85 + s.licht.amb * 1.1 + s.licht.fill * 0.3));
+  }
   let alb;
   if (hit.tisch && s.tisch.holz) {
     const grain = 0.85 + 0.15 * Math.sin(p[0] * 1.7 + Math.sin(p[2] * 0.4) * 3) + 0.05 * Math.sin(p[0] * 13);
     alb = s.tisch.holz.map(c => lin(c) * grain);
   } else alb = (hit.tisch ? s.tisch.c || s.wand : s.wand).map(lin);
+  if (hit.wand && s.putz) alb = alb.map(c => c * (1 - s.putz + 2 * s.putz * (0.6 * rauschen(p[0] * 2.5, p[1] * 2.5) + 0.4 * rauschen(p[0] * 9, p[1] * 9))));
   const n = hit.tisch ? [0, 1, 0] : [0, 0, 1];
   const sh = schatten(s, add(p, mul(n, 0.01)), L);
   const diff = Math.max(0, dot(n, L)) * sh * s.licht.I;

@@ -16,12 +16,13 @@ Eine Handy-App für Töpferinnen und Töpfer, die eigene Stücke töpfern und ei
 ### Blaupause aus dem Foto
 - **Geführte Aufnahme** („Foto für Blaupause“): Eine Maske zeigt den Umriss einer typischen Form (Becher/Tasse, Schüssel, Vase), die Mittellinie, die Standlinie und die Augenhöhe. Eine **Wasserwaage** (Lagesensor) wird grün, wenn das Handy senkrecht und gerade ist. Hinweise wie „Näher heran“, „Standfläche auf die Standlinie“ oder „Mehr Licht“ führen zum besten Winkel: **frontal, Kamera auf halber Höhe, Henkel zur Seite**.
 - Die Neigung des Handys und die Brennweite werden mit dem Foto gespeichert; damit rechnet die Erkennung die Perspektive genau heraus (bei Galeriefotos wird die Brennweite aus den EXIF-Daten gelesen).
-- **Erkennung**: Stück und Hintergrund bekommen je ein Farbmodell, das Schatten und Glanzlichter verträgt. Das Stück wird an der **Mittellinie geteilt**, für jede Seite wird die Außenkante gesucht; die besser belichtete Seite ist die **Leitseite** und dient der anderen als Vorlage. Was im Schatten, in Spiegelungen oder hinter Farbwechseln (z. B. zweifarbig getaucht, unglasierter Fuß) verloren geht, ergänzt die App aus ihrem **Formwissen** – gelernt aus einer Datenbank mit 3200 Bechern, Tassen, Schüsseln, Schalen und Vasen.
+- **Erkennung**: Zuerst wird die **Mittelachse** gesucht – dort, wo viele Kanten spiegelgleich links und rechts liegen und das Stück auch innen spiegelgleich aussieht. Dann wird der Umriss **für beide Seiten gemeinsam** verfolgt: Ein Drehteil ist symmetrisch, Dinge im Hintergrund (Bilder, Regalkanten, Nachbargefäße) fast nie dazu. Die besser belichtete Seite (**Leitseite**) trägt den Umriss auch dort, wo die andere im Schatten liegt. Farbmodelle für Stück und Hintergrund vertragen Schatten und Glanzlichter. Was im Schatten, in Spiegelungen oder hinter Farbwechseln (z. B. zweifarbig getaucht, unglasierter Fuß) verloren geht, ergänzt die App aus ihrem **Formwissen** – gelernt aus einer Datenbank mit 3200 Bechern, Tassen, Schüsseln, Schalen und Vasen.
 - Henkel werden erkannt (auch über das Henkelloch) und vermessen: Höhe, wie weit er absteht, Ansatzhöhen
 - **Zeichnung leicht von oben**, damit Öffnung und Boden als Ellipsen zu sehen sind – auch wenn frontal fotografiert wurde. Stil einer Seladon-Glasur mit Craquelé; markante Stellen: **Öffnung, Hals/Taille, Bauch/Schulter, Rillen, Absatz/Fußansatz, Boden, Höhe**
 - Fehlt eine Stelle, **auf die Form tippen** und eine eigene Stelle hinzufügen; Stellen lassen sich umbenennen oder ausblenden
 - **Maß antippen** → Wert eintragen. Schon ein Maß reicht: alle anderen Maße und die Höhe der Stellen werden aus dem Foto **geschätzt (≈)**
-- „Umriss anpassen“: Rahmen, Empfindlichkeit, Art des Stücks, anderes oder neues Foto; mit **Hinzufügen / Entfernen** den Umriss mit dem Finger korrigieren
+- Auf der Werkstückseite zeigt ein kleines Foto mit eingezeichnetem Umriss, **wie die App das Stück erkannt hat** – bei Unsicherheit mit dem Hinweis „Bitte prüfen“
+- „Umriss anpassen“: Rahmen, Empfindlichkeit, Art des Stücks, anderes oder neues Foto; **auf das Stück tippen**, wenn die App ein Nachbarobjekt erwischt hat; mit **Hinzufügen / Entfernen** den Umriss mit dem Finger korrigieren
 - „Groß anzeigen“ für die Drehscheibe – der Bildschirm bleibt dabei an
 
 ### 2. Glasieren – Vorher-Nachher-Protokoll
@@ -88,6 +89,7 @@ npx http-server -p 8080
 npm install                              # nur für die Werkzeuge (pngjs, playwright-core)
 npm run formen                           # Datenbank bauen, Modelle lernen → js/formen-modell.js, tools/formen/ANALYSE.md
 node tools/test/auswerten.mjs 96 --bericht   # Erkennung an gerenderten Testfotos prüfen → tools/test/ERKENNUNG.md
+node tools/test/echt.mjs foto.png        # echtes Foto erkennen und Ergebnis einzeichnen
 node tools/test/blaupausen.mjs 6         # Testfotos und Blaupausen nebeneinander ansehen
 node tools/test/app-test.mjs             # Ende-zu-Ende im Browser mit simulierter Kamera
 ```
@@ -95,4 +97,4 @@ node tools/test/app-test.mjs             # Ende-zu-Ende im Browser mit simuliert
 - `tools/formen/typologie.mjs` – Formfamilien gedrehter Gefäße (Proportionen, Fuß, Bauch, Taille, Schulter, Hals, Lippe)
 - `tools/formen/formen-db.json` – die Datenbank (3200 Konturen); eigene Profile können ergänzt werden
 - `tools/formen/ANALYSE.md` – Linienführung je Familie und wie genau verdeckte Konturteile vorhergesagt werden
-- `tools/test/szene.mjs` – realistische Testfotos (Raymarching): Glasuren, Schatten, Glanzlichter, Henkel, Handy-Optik
+- `tools/test/szene.mjs` – realistische Testfotos (Raymarching): Glasuren, Schatten, Glanzlichter, Henkel, Handy-Optik; mit `--unordnung` zusätzlich Bilder an der Wand, Nachbargefäße, Regalkanten, Putz

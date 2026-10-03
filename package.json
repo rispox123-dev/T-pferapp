@@ -1,0 +1,14 @@
+{
+  "name": "toepferbuch",
+  "private": true,
+  "type": "module",
+  "description": "Töpferbuch – die App selbst braucht keinen Build-Schritt. Die Skripte hier bauen nur die Formen-Datenbank und testen die Formerkennung.",
+  "scripts": {
+    "formen": "node tools/formen/bauen.mjs && node tools/formen/analyse.mjs",
+    "test:erkennung": "node tools/test/auswerten.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.63.0",
+    "pngjs": "^7.0.0"
+  }
+}

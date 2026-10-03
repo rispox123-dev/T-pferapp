@@ -44,3 +44,39 @@ export function blobToDataUrl(blob) {
 export async function dataUrlToBlob(dataUrl) {
   return (await fetch(dataUrl)).blob();
 }
+
+// Brennweite (Kleinbild-Äquivalent, mm) aus den EXIF-Daten eines JPEG-Fotos – die
+// Formerkennung rechnet damit die Perspektive heraus. null, wenn nicht vorhanden.
+export async function brennweiteAusExif(file) {
+  try {
+    const buf = await file.slice(0, 256 * 1024).arrayBuffer();
+    const v = new DataView(buf);
+    if (v.getUint16(0) !== 0xffd8) return null;
+    let o = 2;
+    while (o + 4 < v.byteLength) {
+      const marker = v.getUint16(o), len = v.getUint16(o + 2);
+      if (marker === 0xffe1 && v.getUint32(o + 4) === 0x45786966) {
+        const t = o + 10;
+        const le = v.getUint16(t) === 0x4949;
+        const u16 = p => v.getUint16(p, le), u32 = p => v.getUint32(p, le);
+        const eintrag = (ifd, tag) => {
+          const n = u16(t + ifd);
+          for (let i = 0; i < n; i++) {
+            const e = t + ifd + 2 + i * 12;
+            if (u16(e) === tag) return e;
+          }
+          return -1;
+        };
+        const exifPtr = eintrag(u32(t + 4), 0x8769);
+        if (exifPtr < 0) return null;
+        const f = eintrag(u32(exifPtr + 8), 0xa405);
+        if (f < 0) return null;
+        const mm = u16(f + 8);
+        return mm > 0 ? mm : null;
+      }
+      if ((marker & 0xff00) !== 0xff00) return null;
+      o += 2 + len;
+    }
+  } catch { /* keine EXIF-Daten */ }
+  return null;
+}

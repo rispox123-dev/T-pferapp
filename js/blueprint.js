@@ -154,11 +154,10 @@ export function estimate(bp, values = {}, pos = {}) {
 // Zeichnung
 // ---------------------------------------------------------------------------
 
-const INK = '#22302c';
-const INK_SOFT = '#4b5d57';
-const CLAY = '#9a4a24';
-const LINE = '#ffffff';
-const GLAZE = '#b8cdc5';
+// Bleistift auf Aquarellpapier (eierschalenfarben, kräftige Körnung)
+const GRAPHIT = '#3d3b38';
+const PAPIER = '#f2ead9';
+const SCHRIFT = '"Bleistift Hand", "Patrick Hand", "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive';
 
 let svgCounter = 0;
 
@@ -177,38 +176,6 @@ export function hashSeed(str = '') {
   let h = 2166136261;
   for (const c of str) h = Math.imul(h ^ c.charCodeAt(0), 16777619);
   return h >>> 0;
-}
-
-// Craquelé-Netz wie bei einer Seladonglasur
-function crackle(W, H, seed) {
-  const rand = rng(seed);
-  const g = 44;
-  const cols = Math.ceil(W / g) + 2;
-  const rows = Math.ceil(H / g) + 2;
-  const P = [];
-  for (let i = 0; i < cols; i++) {
-    P.push([]);
-    for (let j = 0; j < rows; j++) P[i].push([(i - 0.5) * g + (rand() - 0.5) * g * 0.8, (j - 0.5) * g + (rand() - 0.5) * g * 0.8]);
-  }
-  const seg = (a, b) => {
-    const mx = (a[0] + b[0]) / 2 + (rand() - 0.5) * 10;
-    const my = (a[1] + b[1]) / 2 + (rand() - 0.5) * 10;
-    return `M${a[0].toFixed(1)} ${a[1].toFixed(1)}Q${mx.toFixed(1)} ${my.toFixed(1)} ${b[0].toFixed(1)} ${b[1].toFixed(1)}`;
-  };
-  let d = '';
-  let fine = '';
-  for (let i = 0; i < cols; i++) {
-    for (let j = 0; j < rows; j++) {
-      if (i + 1 < cols) d += seg(P[i][j], P[i + 1][j]);
-      if (j + 1 < rows) d += seg(P[i][j], P[i][j + 1]);
-      if (i + 1 < cols && j + 1 < rows) {
-        const r = rand();
-        if (r < 0.3) fine += seg(P[i][j], P[i + 1][j + 1]);
-        else if (r < 0.55) fine += seg(P[i + 1][j], P[i][j + 1]);
-      }
-    }
-  }
-  return { d, fine };
 }
 
 const fmtCm = v => `${Number(v).toLocaleString('de-DE', { maximumFractionDigits: 1 })} cm`;
@@ -294,6 +261,9 @@ const pfad = (pts, closed) => pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixe
  */
 export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = [], interactive = true, seed = 1 } = {}) {
   const uid = `bp${++svgCounter}`;
+  // von Hand geschrieben: jede Beschriftung sitzt ein wenig anders
+  const hand = rng(seed);
+  const schief = (x, y) => ` transform="rotate(${((hand() - 0.5) * 2.4).toFixed(2)} ${x} ${y})"`;
   // auch ältere, noch nicht begradigte Profile sauber zeichnen
   const prof = begradigen(bp.profile);
   const W = 400;
@@ -347,8 +317,11 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
 
   const r0 = rAt(0), rI = Math.max(0, r0 - Math.max(0.018, 0.07 * r0));
   const interior = points.filter(p => p.t != null && p.t > 0 && p.t < 1);
-  let shape = `<path d="${umrissPfad}" class="koerper"/>`;
-  shape += `<path d="${ellipse(0, rI)}" class="oeffnung"/>`;
+  let shape = `<path d="${ellipse(0, rI)}" class="oeffnung"/>`;
+  // Mittellinie als feine Hilfslinie
+  shape += `<path d="M${axis.toFixed(1)} ${(top - 14).toFixed(1)}V${(bottom + 14).toFixed(1)}" class="achse"/>`;
+  // Umriss zweimal leicht versetzt nachgezogen, wie mit dem Bleistift
+  shape += `<path d="${umrissPfad}" class="zweit" transform="translate(.45 .3)"/>`;
   shape += `<path d="${umrissPfad}"/>`;
   shape += `<path d="${ellipse(0, r0)}"/>`;
   shape += `<path d="${ellipse(0, rI)}" class="thin"/>`;
@@ -403,7 +376,7 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
     labels += `<circle cx="${xA.toFixed(1)}" cy="${yA.toFixed(1)}" r="3" class="dot"/>`;
     const rx = side > 0 ? labelX - 8 : 2;
     const rw = side > 0 ? W - labelX + 6 : labelX + 6;
-    labels += `<g class="lbl"${btn(p.key)}><rect x="${rx}" y="${(yL - 19).toFixed(1)}" width="${rw}" height="44" rx="8" class="hit"/>
+    labels += `<g class="lbl"${btn(p.key)}${schief(labelX, yL)}><rect x="${rx}" y="${(yL - 19).toFixed(1)}" width="${rw}" height="44" rx="8" class="hit"/>
       <text x="${labelX}" y="${(yL - 4).toFixed(1)}" class="name"${anchor}>${escXml(p.label)}</text>
       <text x="${labelX}" y="${(yL + 12).toFixed(1)}" class="${vt.cls}"${anchor}>${escXml(vt.text)}</text>
       ${ps ? `<text x="${labelX}" y="${(yL + 24).toFixed(1)}" class="pos"${anchor}>${escXml(ps)}</text>` : ''}</g>`;
@@ -428,43 +401,68 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
 
   const lastLabel = items.length ? items[items.length - 1].yL + 34 : 0;
   const infoTop = Math.max(top + yMax * Hd + 40, lastLabel + 16);
-  const infoSvg = info.map((line, i) => `<text x="22" y="${infoTop + i * 21}" class="info${i ? '' : ' strong'}">${escXml(line)}</text>`).join('');
-  const H = Math.ceil(infoTop + Math.max(0, info.length - 1) * 21 + 26);
+  const infoSvg = info.map((line, i) => `<text x="22" y="${infoTop + i * 22}" class="info${i ? '' : ' strong'}"${schief(22, infoTop + i * 22)}>${escXml(line)}</text>`).join('');
+  const H = Math.ceil(infoTop + Math.max(0, info.length - 1) * 22 + 26);
 
-  const cr = crackle(W, H, seed);
-  const titleSvg = titleLines.map((l, i) => `<text x="${W - 20}" y="${40 + i * 26}" text-anchor="end" class="title">${escXml(l)}</text>`).join('');
+  const titleSvg = titleLines.map((l, i) => `<text x="${W - 20}" y="${40 + i * 26}" text-anchor="end" class="title"${schief(W - 20, 40 + i * 26)}>${escXml(l)}</text>`).join('');
   const half = Math.max(extL, extR) * Hd;
 
   return `<svg class="blueprint" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Blaupause ${escXml(title)}">
   <style>
-    #${uid} text { font-family: "Avenir Next", Futura, "Century Gothic", -apple-system, "Segoe UI", sans-serif; fill: ${INK}; }
-    #${uid} .shape path { fill: none; stroke: ${LINE}; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
-    #${uid} .shape .koerper { fill: #fff; fill-opacity: .1; stroke: none; }
-    #${uid} .shape .oeffnung { fill: ${INK}; fill-opacity: .09; stroke: none; }
-    #${uid} .shape .thin { stroke-width: 1.5; opacity: .8; }
-    #${uid} .shape .dash { stroke-dasharray: 7 6; stroke-width: 2; }
-    #${uid} .lead { fill: none; stroke: ${INK}; stroke-width: 1; opacity: .5; }
-    #${uid} .dot { fill: ${INK}; }
-    #${uid} .dim { fill: none; stroke: ${INK}; stroke-width: 1.2; opacity: .7; stroke-linecap: round; stroke-linejoin: round; }
-    #${uid} .guide { fill: none; stroke: ${INK}; stroke-width: 1; stroke-dasharray: 1.5 4; opacity: .45; }
+    #${uid} text { font-family: ${SCHRIFT}; fill: ${GRAPHIT}; }
+    #${uid} .shape path { fill: none; stroke: ${GRAPHIT}; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; opacity: .9; }
+    #${uid} .shape .zweit { stroke-width: 1.1; opacity: .35; }
+    #${uid} .shape .oeffnung { fill: ${GRAPHIT}; fill-opacity: .07; stroke: none; }
+    #${uid} .shape .achse { stroke-width: .6; stroke-dasharray: 10 4 2 4; opacity: .4; }
+    #${uid} .shape .thin { stroke-width: 1; opacity: .7; }
+    #${uid} .shape .dash { stroke-dasharray: 6 5; stroke-width: 1; opacity: .55; }
+    #${uid} .lead { fill: none; stroke: ${GRAPHIT}; stroke-width: .7; opacity: .6; stroke-linecap: round; }
+    #${uid} .dot { fill: ${GRAPHIT}; opacity: .85; }
+    #${uid} .dim { fill: none; stroke: ${GRAPHIT}; stroke-width: .75; opacity: .75; stroke-linecap: round; stroke-linejoin: round; }
+    #${uid} .guide { fill: none; stroke: ${GRAPHIT}; stroke-width: .6; stroke-dasharray: 1.5 4; opacity: .45; }
     #${uid} .hit { fill: transparent; }
     #${uid} [data-bp-key], #${uid} [data-bp-add] { cursor: pointer; }
-    #${uid} [data-bp-key]:hover .hit, #${uid} [data-bp-key]:focus .hit { fill: rgba(255,255,255,.28); }
+    #${uid} [data-bp-key]:hover .hit, #${uid} [data-bp-key]:focus .hit { fill: ${GRAPHIT}; fill-opacity: .06; }
     #${uid} [data-bp-key]:focus { outline: none; }
-    #${uid} .title { font-size: 23px; font-weight: 500; letter-spacing: .2px; }
-    #${uid} .name { font-size: 12px; fill: ${INK_SOFT}; letter-spacing: .3px; }
-    #${uid} .val { font-size: 16px; font-weight: 600; }
-    #${uid} .val.est { font-weight: 500; font-style: italic; fill: ${INK_SOFT}; }
-    #${uid} .val.empty { font-size: 14px; fill: ${CLAY}; }
-    #${uid} .pos { font-size: 11px; fill: ${INK_SOFT}; }
-    #${uid} .info { font-size: 14px; }
-    #${uid} .info.strong { font-size: 15px; font-weight: 600; }
+    #${uid} .title { font-size: 28px; letter-spacing: .3px; }
+    #${uid} .name { font-size: 14px; opacity: .78; letter-spacing: .2px; }
+    #${uid} .val { font-size: 19px; }
+    #${uid} .val.est { opacity: .72; }
+    #${uid} .val.empty { font-size: 16px; opacity: .55; }
+    #${uid} .pos { font-size: 13px; opacity: .7; }
+    #${uid} .info { font-size: 16px; opacity: .85; }
+    #${uid} .info.strong { font-size: 17px; opacity: 1; }
   </style>
   <defs>
-    <filter id="${uid}-m" x="0" y="0" width="100%" height="100%">
-      <feTurbulence type="fractalNoise" baseFrequency="0.018" numOctaves="3" seed="${seed % 97}"/>
-      <feColorMatrix values="0 0 0 0 0.33  0 0 0 0 0.47  0 0 0 0 0.43  1.3 0 0 0 -0.55"/>
+    <!-- Aquarellpapier: Körnung als Relief (Licht von links oben), dazu leichte Wolken -->
+    <filter id="${uid}-papier" filterUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.11" numOctaves="4" seed="${seed % 89}" result="korn"/>
+      <feDiffuseLighting in="korn" surfaceScale="1.5" diffuseConstant="1" lighting-color="#ffffff" result="licht">
+        <feDistantLight azimuth="225" elevation="58"/>
+      </feDiffuseLighting>
+      <!-- Relief nur andeuten: hell lassen, Täler leicht abdunkeln -->
+      <feComponentTransfer in="licht" result="relief">
+        <feFuncR type="linear" slope=".42" intercept=".66"/>
+        <feFuncG type="linear" slope=".42" intercept=".66"/>
+        <feFuncB type="linear" slope=".42" intercept=".65"/>
+      </feComponentTransfer>
+      <feBlend in="relief" in2="SourceGraphic" mode="multiply" result="papier"/>
+      <feTurbulence type="fractalNoise" baseFrequency="0.006" numOctaves="3" seed="${(seed % 53) + 7}" result="wolken"/>
+      <feColorMatrix in="wolken" values="0 0 0 0 0.62  0 0 0 0 0.52  0 0 0 0 0.36  0 0 0 .28 -.11" result="flecken"/>
+      <feComposite in="flecken" in2="papier" operator="over"/>
     </filter>
+    <!-- Bleistift: Graphit bleibt nur auf den Spitzen der Papierkörnung hängen -->
+    <filter id="${uid}-blei" filterUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="${seed % 71}" result="n"/>
+      <feColorMatrix in="n" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -1.3 1.5" result="zahn"/>
+      <feComposite in="SourceGraphic" in2="zahn" operator="in" result="g"/>
+      <feTurbulence type="fractalNoise" baseFrequency="0.035" numOctaves="1" seed="${(seed % 61) + 3}" result="w"/>
+      <feDisplacementMap in="g" in2="w" scale=".8" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+    <radialGradient id="${uid}-rand" cx="50%" cy="45%" r="75%">
+      <stop offset="70%" stop-color="#8a7350" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#8a7350" stop-opacity=".12"/>
+    </radialGradient>
     <mask id="${uid}-hm" maskUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}">
       <rect width="${W}" height="${H}" fill="#fff"/>
       <path d="${umrissPfad}" fill="#000"/>
@@ -472,16 +470,16 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
   </defs>
   <clipPath id="${uid}-c"><rect width="${W}" height="${H}"/></clipPath>
   <g id="${uid}" clip-path="url(#${uid}-c)">
-    <rect width="${W}" height="${H}" fill="${GLAZE}"/>
-    <rect width="${W}" height="${H}" filter="url(#${uid}-m)" opacity=".45"/>
-    <path d="${cr.d}" fill="none" stroke="#8ea89f" stroke-width=".9" opacity=".6"/>
-    <path d="${cr.fine}" fill="none" stroke="#8ea89f" stroke-width=".6" opacity=".45"/>
+    <rect width="${W}" height="${H}" fill="${PAPIER}" filter="url(#${uid}-papier)"/>
+    <rect width="${W}" height="${H}" fill="url(#${uid}-rand)"/>
+    <g filter="url(#${uid}-blei)">
     ${titleSvg}
     <g class="shape">${shape}</g>
     ${interactive ? `<rect x="${(axis - half - 8).toFixed(1)}" y="${(top - 6).toFixed(1)}" width="${(2 * half + 16).toFixed(1)}" height="${(cb * Hd + 12).toFixed(1)}" class="hit add" data-bp-add data-top="${top.toFixed(2)}" data-hd="${(cb * Hd).toFixed(2)}"/>` : ''}
     ${height}
     ${labels}
     ${infoSvg}
+    </g>
   </g>
 </svg>`;
 }

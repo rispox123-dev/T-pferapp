@@ -3,7 +3,6 @@ import { processImage, blobToDataUrl, dataUrlToBlob, brennweiteAusExif } from '.
 import { findPoints, estimate, effectivePoints, renderBlueprint, hashSeed } from './blueprint.js';
 import { analyze, loadForAnalysis, cropFromGuide, DEFAULT_SENS } from './erkennung.js';
 import { gefuehrteAufnahme, kameraVerfuegbar, GRUPPEN } from './kamera.js';
-import { umrissVerfeinern } from './verfeinern.js';
 
 // ---------------------------------------------------------------------------
 // Fachliche Listen
@@ -419,7 +418,6 @@ async function viewPiece(id) {
         ${umrissPruefen(p)}
         <div class="btn-row" style="margin:12px 0 2px">
           <a class="btn small primary" href="#/werkstueck/${id}/blaupause">Groß anzeigen</a>
-          <button type="button" class="btn small" id="bp-fein">Umriss verfeinern</button>
           <a class="btn small" href="#/werkstueck/${id}/umriss">Umriss anpassen</a>
         </div>
       </div>`
@@ -474,31 +472,6 @@ async function viewPiece(id) {
       window.scrollTo(0, y);
     });
   }
-  $app.querySelector('#bp-fein')?.addEventListener('click', async e => {
-    const bp = p.blueprint;
-    const btn = e.currentTarget;
-    btn.disabled = true;
-    try {
-      const photo = await db.get('photos', bp.photoId);
-      if (!photo) return toast('Foto nicht gefunden');
-      const src = await loadForAnalysis(photo.blob);
-      const crop = bp.crop || cropFromGuide(photo.kamera?.guide);
-      const sens = bp.sens ?? DEFAULT_SENS;
-      const res = await verfeinern({ photo, src, crop, sens, gruppe: bp.gruppe, punkt: bp.punkt, fein: bp.fein, brush: bp.brush });
-      if (!res) return;
-      p.blueprint = makeBlueprint(bp.photoId, crop, sens, res.result, bp, res.brush, bp.gruppe, bp.punkt, res.fein);
-      p.updatedAt = new Date().toISOString();
-      await db.put('pieces', p);
-      toast('Umriss gespeichert');
-      const y = window.scrollY;
-      await viewPiece(id);
-      window.scrollTo(0, y);
-    } catch (err) {
-      toast(err.message);
-    } finally {
-      btn.disabled = false;
-    }
-  });
   $app.querySelector('#del').onclick = async () => {
     if (!confirm(`„${p.name || 'Werkstück'}“ wirklich löschen? Glasurprotokolle bleiben erhalten.`)) return;
     for (const ph of p.photos || []) await deletePhoto(ph);
@@ -669,12 +642,10 @@ function umrissPruefen(p) {
   </div>`;
 }
 
-function makeBlueprint(photoId, crop, sens, result, prev, brush = [], gruppe = null, punkt = null, fein = null) {
+function makeBlueprint(photoId, crop, sens, result, prev, brush = [], gruppe = null, punkt = null) {
   return {
     version: 3,
     photoId, crop, sens, brush, gruppe, punkt,
-    // Vorgaben aus „Umriss verfeinern“ (Mittelachse, Ober-/Unterkante, äußerste Punkte)
-    fein,
     profile: result.profile,
     handles: result.handles,
     form: result.form,
@@ -724,21 +695,8 @@ async function createBlueprint(photoId, prev) {
   const crop = same && prev.crop ? prev.crop : cropFromGuide(photo.kamera?.guide);
   const sens = same ? prev.sens ?? DEFAULT_SENS : DEFAULT_SENS;
   const brush = same ? prev.brush || [] : [];
-  const fein = same ? prev.fein || null : null;
-  const result = analyze(src, { crop, sens, brush, fein, hint: { ...erkennungsHinweis(photo, src, gruppe), punkt: punkt || undefined } });
-  return makeBlueprint(photoId, crop, sens, result, prev, brush, gruppe, punkt, fein);
-}
-
-// Vollbild „Umriss verfeinern“: rechnet nach jeder Änderung mit den Vorgaben neu.
-// Ergebnis: { fein, brush, result } oder null (abgebrochen)
-function verfeinern({ photo, src, crop, sens, gruppe, punkt, fein, brush }) {
-  const hint = { ...erkennungsHinweis(photo, src, gruppe), punkt: punkt || undefined };
-  return umrissVerfeinern({
-    img: src.img,
-    fein,
-    brush,
-    rechnen: v => analyze(src, { crop, sens, brush: v.brush, fein: v.fein, hint }),
-  });
+  const result = analyze(src, { crop, sens, brush, hint: { ...erkennungsHinweis(photo, src, gruppe), punkt: punkt || undefined } });
+  return makeBlueprint(photoId, crop, sens, result, prev, brush, gruppe, punkt);
 }
 
 function measureDialog({ title, isHeight, value, est, showPos, pos, posEst, label, removeText }) {
@@ -871,7 +829,7 @@ async function viewBlueprint(id) {
 async function viewBlueprintEditor(id) {
   const p = await db.get('pieces', id);
   if (!p) return notFound();
-  setHeader({ title: 'Umriss erkennen', back: `#/werkstueck/${id}` });
+  setHeader({ title: 'Umriss anpassen', back: `#/werkstueck/${id}` });
   const neuesFoto = async () => {
     const fid = await blaupausenFoto({ galerie: null });
     if (!fid) return null;
@@ -896,7 +854,6 @@ async function viewBlueprintEditor(id) {
     brush: gleich ? structuredClone(prev.brush || []) : [],
     gruppe: gleich ? prev.gruppe || null : null,
     punkt: gleich ? prev.punkt || null : null,
-    fein: gleich ? prev.fein || null : null,
     mode: 'rahmen',
     brushSize: 5,
     src: null,
@@ -905,7 +862,7 @@ async function viewBlueprintEditor(id) {
   };
 
   $app.innerHTML = `
-    <div class="info-box"><p>Orange ist der erkannte Umriss, die gestrichelte Linie die Mittellinie. Die besser belichtete Seite (<strong>Leitseite</strong>) gibt die Form vor; blau markierte Stellen hat die App aus ihrem Formwissen ergänzt. Hat sie ein anderes Objekt erwischt, <strong>tippe auf dein Stück</strong>. Fehlt etwas (z. B. ein Henkel), male es mit <strong>Hinzufügen</strong> dazu; Schatten nimmst du mit <strong>Entfernen</strong> weg. Ganz genau geht es mit <strong>Umriss verfeinern</strong>: im Vollbild zoomen, Mittelachse verschieben und Regler an Ober-, Unterkante und die breiteste Stelle schieben.</p></div>
+    <div class="info-box"><p>Orange ist der erkannte Umriss, die gestrichelte Linie die Mittellinie. Die besser belichtete Seite (<strong>Leitseite</strong>) gibt die Form vor; blau markierte Stellen hat die App aus ihrem Formwissen ergänzt. Hat sie ein anderes Objekt erwischt, <strong>tippe auf dein Stück</strong>. Fehlt etwas (z. B. ein Henkel), male es mit <strong>Hinzufügen</strong> dazu; Schatten nimmst du mit <strong>Entfernen</strong> weg.</p></div>
     <div class="bp-choice">${p.photos.map(ph => `<button type="button" data-photo-id="${ph}" class="${ph === st.photoId ? 'active' : ''}" aria-label="Dieses Foto verwenden">${thumb(ph)}</button>`).join('')}
       ${kameraVerfuegbar() ? `<button type="button" class="bp-neu" id="bp-foto" aria-label="Neues Foto für die Blaupause aufnehmen">${ICON_GUIDE}<span>Neues Foto</span></button>` : ''}</div>
     <label class="field"><span>Art des Stücks</span><select id="bp-gruppe">
@@ -918,10 +875,6 @@ async function viewBlueprintEditor(id) {
       <label><input type="radio" name="bpmode" value="radierer"><span class="none">Entfernen</span></label>
     </div>
     <div class="bp-editor"><canvas></canvas></div>
-    <div class="btn-row bp-fein-row">
-      <button type="button" class="btn" id="bp-fein">Umriss verfeinern</button>
-      <button type="button" class="btn small" id="bp-fein-weg" hidden>Vorgaben entfernen</button>
-    </div>
     <div id="brush-tools" hidden>
       <label class="range-field"><span>Pinselgröße</span>
         <input type="range" min="2" max="12" value="${st.brushSize}" id="brush-size" class="compare-range"></label>
@@ -947,7 +900,6 @@ async function viewBlueprintEditor(id) {
   const statusEl = $app.querySelector('#bp-status');
   const previewEl = $app.querySelector('#bp-preview');
   const applyBtn = $app.querySelector('#apply');
-  const feinWeg = $app.querySelector('#bp-fein-weg');
   let box = { w: 0, h: 0 };
   const brushLayer = document.createElement('canvas');
   const brushCtx = brushLayer.getContext('2d');
@@ -1061,7 +1013,7 @@ async function viewBlueprintEditor(id) {
   const run = () => {
     let error = '';
     try {
-      st.result = analyze(st.src, { crop: st.crop, sens: st.sens, brush: st.brush, fein: st.fein, hint: { ...erkennungsHinweis(st.photo, st.src, st.gruppe), punkt: st.punkt || undefined } });
+      st.result = analyze(st.src, { crop: st.crop, sens: st.sens, brush: st.brush, hint: { ...erkennungsHinweis(st.photo, st.src, st.gruppe), punkt: st.punkt || undefined } });
     } catch (err) {
       st.result = null;
       error = err.message;
@@ -1069,9 +1021,8 @@ async function viewBlueprintEditor(id) {
     draw();
     const r = st.result;
     const erkannt = r ? `Erkannt: ${r.form.label} · Leitseite ${r.quality.leitseite}${r.handles.length ? ` · Henkel ${r.quality.henkelSeite || ''}` : ''}${r.quality.ergaenzt > 0.03 ? ` · ${Math.round(r.quality.ergaenzt * 100)} % aus Formwissen ergänzt` : ''}. ` : '';
-    feinWeg.hidden = !st.fein;
     statusEl.textContent = error
-      || erkannt + (st.fein ? 'Von Hand verfeinert. ' : '') + (st.mode === 'rahmen'
+      || erkannt + (st.mode === 'rahmen'
         ? 'Falsches Objekt erwischt? Tippe auf dein Stück. Sonst den Rahmen enger ziehen oder mit „Hinzufügen“ / „Entfernen“ korrigieren.'
         : st.mode === 'pinsel'
           ? 'Male mit dem Finger über Teile, die fehlen (z. B. einen Henkel).'
@@ -1179,27 +1130,17 @@ async function viewBlueprintEditor(id) {
     st.crop = null;
     st.brush = [];
     st.punkt = null;
-    st.fein = null;
     $app.querySelectorAll('.bp-choice button').forEach(x => x.classList.toggle('active', x === b));
     load();
   });
 
   $app.querySelector('#bp-gruppe').addEventListener('change', e => { st.gruppe = e.target.value || null; run(); });
-  $app.querySelector('#bp-fein').onclick = async () => {
-    if (!st.src) return;
-    const res = await verfeinern({ photo: st.photo, src: st.src, crop: st.crop, sens: st.sens, gruppe: st.gruppe, punkt: st.punkt, fein: st.fein, brush: st.brush });
-    if (!res) return;
-    st.fein = res.fein;
-    st.brush = res.brush;
-    run();
-  };
-  feinWeg.onclick = () => { st.fein = null; run(); };
   $app.querySelector('#bp-foto')?.addEventListener('click', async () => { if (await neuesFoto()) router(); });
 
   $app.querySelector('#cancel').onclick = () => $back.click();
   applyBtn.onclick = async () => {
     if (!st.result) return;
-    p.blueprint = makeBlueprint(st.photoId, st.crop, st.sens, st.result, prev, st.brush, st.gruppe, st.punkt, st.fein);
+    p.blueprint = makeBlueprint(st.photoId, st.crop, st.sens, st.result, prev, st.brush, st.gruppe, st.punkt);
     p.updatedAt = new Date().toISOString();
     await db.put('pieces', p);
     toast('Blaupause gespeichert');
@@ -1840,7 +1781,6 @@ async function viewMore() {
         <li>Tippe ein Maß an, um es einzutragen. Schon ein Maß (z. B. die Höhe) reicht – die übrigen werden aus dem Foto geschätzt (≈).</li>
         <li>Fehlt eine Stelle (z. B. eine Rille)? Tippe auf die Form an dieser Höhe. Stellen lassen sich auch umbenennen oder ausblenden.</li>
         <li>Auf der Werkstückseite siehst du klein, welchen Umriss die App erkannt hat. Stimmt er nicht? „Umriss anpassen“ → auf dein Stück tippen (falls ein Nachbarobjekt erwischt wurde), Rahmen enger ziehen oder mit „Hinzufügen“ / „Entfernen“ darübermalen.</li>
-        <li>„Umriss verfeinern“ zeigt das Foto im Vollbild (mit zwei Fingern zoomen). Schiebe die gelben Regler vom Bildrand an Oberkante, Unterkante und die breiteste Stelle links und rechts, verschiebe bei Bedarf die Mittelachse und male mit Pinsel oder Radierer nach – der Umriss wird jedes Mal neu berechnet.</li>
         <li>Vor dem Töpfern: Werkstück öffnen → „Groß anzeigen“. Der Bildschirm bleibt dabei an.</li>
       </ol>
     </div>

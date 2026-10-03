@@ -1,3 +1,10 @@
+/* Handschrift der Blaupausen (Patrick Hand, SIL Open Font License, siehe fonts/) */
+@font-face {
+  font-family: "Bleistift Hand";
+  src: url("../fonts/patrick-hand.woff2") format("woff2");
+  font-display: swap;
+}
+
 :root {
   --bg: #f6f1ea;
   --surface: #fffdf9;
@@ -608,71 +615,6 @@ a { color: var(--accent); }
 .bp-choice button { flex: 0 0 64px; height: 80px; padding: 0; border: 3px solid transparent; border-radius: 12px; overflow: hidden; background: none; cursor: pointer; }
 .bp-choice button.active { border-color: var(--accent); }
 .bp-choice .thumb { height: 100%; }
-.bp-fein-row { margin-top: 10px; }
-
-/* ---------- Umriss verfeinern (Vollbild) ---------- */
-body.fein-offen { overflow: hidden; }
-.fein {
-  position: fixed; inset: 0;
-  z-index: 120;
-  display: flex; flex-direction: column;
-  background: #111; color: #fff;
-  user-select: none; -webkit-user-select: none;
-  overscroll-behavior: contain;
-}
-.fein button { font: inherit; cursor: pointer; }
-.fein-kopf {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: calc(8px + env(safe-area-inset-top)) 12px 8px;
-}
-.fein-kopf strong { font-size: 1rem; }
-.fein-kopf button { border: 0; border-radius: 10px; padding: 9px 14px; background: rgba(255,255,255,.14); color: #fff; font-weight: 600; }
-.fein-kopf .fein-ok { background: #d98458; color: #1c1814; }
-.fein-kopf .fein-ok:disabled { opacity: .45; cursor: default; }
-.fein-buehne { position: relative; flex: 1; min-height: 0; overflow: hidden; }
-.fein-buehne canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
-.fein-status {
-  flex: none;
-  height: calc(2 * 1.35em + 6px); margin: 0; padding: 0 14px 6px; overflow: hidden;
-  font-size: .8rem; line-height: 1.35; color: #ddd;
-}
-.fein-status.fehler { color: #ffb4a8; }
-.fein-leiste { padding: 8px 12px calc(10px + env(safe-area-inset-bottom)); background: #1b1b1b; }
-.fein-werkzeuge { display: flex; gap: 6px; }
-.fein-werkzeuge button {
-  flex: 1;
-  display: flex; flex-direction: column; align-items: center; gap: 2px;
-  padding: 6px 4px;
-  border: 2px solid transparent; border-radius: 12px;
-  background: rgba(255,255,255,.08); color: #fff;
-  font-size: .8rem; font-weight: 600;
-}
-.fein-werkzeuge svg { width: 24px; height: 24px; }
-.fein-werkzeuge button[aria-pressed="true"] { border-color: #d98458; background: rgba(217,132,88,.28); }
-.fein-zeile { display: flex; align-items: center; gap: 8px; height: 38px; margin-top: 6px; }
-.fein-zeile button { flex: 1; border: 0; border-radius: 10px; padding: 8px 6px; background: rgba(255,255,255,.1); color: #fff; font-size: .85rem; }
-.fein-groesse { flex: 1; display: flex; align-items: center; gap: 10px; font-size: .8rem; color: #ccc; }
-.fein-groesse[hidden], .fein-tipp[hidden] { display: none; }
-.fein-groesse input { flex: 1; accent-color: #d98458; }
-.fein-tipp { height: calc(3 * 1.35em); margin: 6px 2px 0; overflow: hidden; font-size: .8rem; line-height: 1.35; color: #ccc; }
-.fein-zoom { flex: 1; font-size: .8rem; color: #999; text-align: center; }
-.fein-zoom[hidden] { display: none; }
-.range-field { display: block; margin: 14px 0 2px; }
-.range-field span { display: block; font-size: .85rem; font-weight: 600; color: var(--muted); }
-
-dialog.sheet {
-  width: min(420px, calc(100% - 32px));
-  padding: 20px 18px 6px;
-  border: 0;
-  border-radius: 18px;
-  background: var(--surface);
-  color: var(--text);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, .3);
-}
-dialog.sheet::backdrop { background: rgba(30, 20, 10, .45); }
-dialog.sheet h2 { margin: 0 0 14px; font-size: 1.15rem; }
-.sheet-buttons { display: flex; flex-direction: row-reverse; gap: 10px; margin: 4px 0 12px; }
-.sheet-buttons .btn { flex: 1; }
 
 /* ---------- Geführte Aufnahme ---------- */
 .photo-picker .pp-add.pp-guided { border-style: solid; background: var(--accent); color: var(--accent-text); }

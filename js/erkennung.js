@@ -21,6 +21,7 @@
 // 7. Henkel: was außerhalb des Körpers seitlich am Stück hängt.
 
 import { formAnpassen, MODELL_N } from './formprior.js';
+import { begradigen } from './kontur.js';
 
 export const PROFILE_POINTS = 200;
 export const DEFAULT_CROP = { x0: 0.02, y0: 0.02, x1: 0.98, y1: 0.98 };
@@ -931,8 +932,8 @@ function profilBerechnen(ctx, achse, hw, wt, top, bottom, hint, info) {
     anteil[i] = lam;
     ergaenzt += 1 - lam;
   }
-  // leichte Glättung, Details (Rillen, Fuß) bleiben
-  const glatt = Float32Array.from(profil, (v, i) => (i > 0 && i < M - 1 ? 0.25 * profil[i - 1] + 0.5 * v + 0.25 * profil[i + 1] : v));
+  // Messrauschen herausnehmen: gerade Wände werden gerade, Bögen ruhig, Kanten (Rillen, Fuß) bleiben scharf
+  const glatt = Float32Array.from(begradigen(profil));
 
   // Silhouette im Bild (für Anzeige, Henkel, zweiten Durchgang)
   const silh = P.silhouette(Ys, Float64Array.from(glatt, v => v * HD), h);

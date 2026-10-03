@@ -154,9 +154,9 @@ export function estimate(bp, values = {}, pos = {}) {
 // Zeichnung
 // ---------------------------------------------------------------------------
 
-// Bleistift auf Aquarellpapier (eierschalenfarben, kräftige Körnung)
+// Bleistift auf Aquarellpapier (off-white, kräftige Körnung)
 const GRAPHIT = '#3d3b38';
-const PAPIER = '#f2ead9';
+const PAPIER = '#f7f5f0';
 const SCHRIFT = '"Bleistift Hand", "Patrick Hand", "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive';
 
 let svgCounter = 0;
@@ -444,11 +444,11 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
       <feComponentTransfer in="licht" result="relief">
         <feFuncR type="linear" slope=".42" intercept=".66"/>
         <feFuncG type="linear" slope=".42" intercept=".66"/>
-        <feFuncB type="linear" slope=".42" intercept=".65"/>
+        <feFuncB type="linear" slope=".42" intercept=".66"/>
       </feComponentTransfer>
       <feBlend in="relief" in2="SourceGraphic" mode="multiply" result="papier"/>
       <feTurbulence type="fractalNoise" baseFrequency="0.006" numOctaves="3" seed="${(seed % 53) + 7}" result="wolken"/>
-      <feColorMatrix in="wolken" values="0 0 0 0 0.62  0 0 0 0 0.52  0 0 0 0 0.36  0 0 0 .28 -.11" result="flecken"/>
+      <feColorMatrix in="wolken" values="0 0 0 0 0.60  0 0 0 0 0.58  0 0 0 0 0.55  0 0 0 .22 -.09" result="flecken"/>
       <feComposite in="flecken" in2="papier" operator="over"/>
     </filter>
     <!-- Bleistift: Graphit bleibt nur auf den Spitzen der Papierkörnung hängen -->
@@ -460,8 +460,8 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
       <feDisplacementMap in="g" in2="w" scale=".8" xChannelSelector="R" yChannelSelector="G"/>
     </filter>
     <radialGradient id="${uid}-rand" cx="50%" cy="45%" r="75%">
-      <stop offset="70%" stop-color="#8a7350" stop-opacity="0"/>
-      <stop offset="100%" stop-color="#8a7350" stop-opacity=".12"/>
+      <stop offset="70%" stop-color="#6e6a63" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#6e6a63" stop-opacity=".12"/>
     </radialGradient>
     <mask id="${uid}-hm" maskUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}">
       <rect width="${W}" height="${H}" fill="#fff"/>

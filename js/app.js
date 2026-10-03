@@ -1908,5 +1908,17 @@ router();
 navigator.storage?.persist?.().catch(() => {});
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  navigator.serviceWorker.register('sw.js').catch(err => console.warn('Service Worker:', err));
+  // Gibt es eine neue Version, übernimmt der neue Service Worker sofort; dann die App einmal
+  // neu laden, damit Gestaltung und Code der neuen Version sichtbar werden.
+  const hatteVersion = !!navigator.serviceWorker.controller;
+  let neuGeladen = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hatteVersion || neuGeladen) return;
+    neuGeladen = true;
+    location.reload();
+  });
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => {
+    // beim Zurückkehren in die App (vom Homescreen oft nur fortgesetzt) nach Updates sehen
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+  }).catch(err => console.warn('Service Worker:', err));
 }

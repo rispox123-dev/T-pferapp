@@ -1,6 +1,6 @@
 // Speichert die App-Dateien, damit sie auch ohne Internet startet.
 // Bei Änderungen an der App die Versionsnummer erhöhen.
-const CACHE = 'toepferbuch-v9';
+const CACHE = 'toepferbuch-v10';
 const FILES = [
   './',
   'index.html',
@@ -13,6 +13,7 @@ const FILES = [
   'js/formprior.js',
   'js/formen-modell.js',
   'js/kamera.js',
+  'js/verfeinern.js',
   'manifest.webmanifest',
   'icons/icon.svg',
   'icons/icon-192.png',

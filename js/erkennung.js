@@ -291,9 +291,14 @@ function achseSuchen(T, w, h, mitte, streuung) {
 const ALPHA_S = 6; // Gewicht der Kanten
 const RHO = 0.8; // Gewicht der Farbfläche (zweiter Durchgang)
 const C_ON = 8, C_OFF = 8;
+const PINSEL = 5; // Gewicht gemalter / radierter Pixel beim Verfeinern
 
 function symKontur(ctx, { erwartung = null, mitFarbe = false, schwelle = 1 } = {}) {
-  const { w, h, T, q, achse } = ctx;
+  const { w, h, T, q, achse, pm } = ctx;
+  // Vorgaben aus „Umriss verfeinern“: Ober-/Unterkante (Zeilen), äußerste Punkte (Spalten)
+  const G = ctx.grenzen || {};
+  const yA = G.top != null ? Math.round(G.top) : null, yB = G.bottom != null ? Math.round(G.bottom) : null;
+  const TG = 2; // Spielraum in Zeilen
   const ax = Float64Array.from({ length: h }, (_, y) => achse(y));
   let U = 0;
   for (let y = 0; y < h; y++) U = Math.max(U, Math.ceil(Math.max(ax[y], w - 1 - ax[y])));
@@ -335,6 +340,9 @@ function symKontur(ctx, { erwartung = null, mitFarbe = false, schwelle = 1 } = {
 
   for (let y = 0; y < h; y++) {
     const a = ax[y];
+    const zeileFrei = (yA == null || y >= yA - TG) && (yB == null || y <= yB + TG);
+    let uLim = U;
+    if (G.xL != null || G.xR != null) uLim = Math.min(U, Math.ceil(Math.max(G.xL != null ? a - G.xL : 0, G.xR != null ? G.xR - a : 0)) + 1);
     let s = 0;
     for (let u = 0; u <= U; u++) {
       const xl = Math.round(a - u), xr = Math.round(a + u);
@@ -346,6 +354,8 @@ function symKontur(ctx, { erwartung = null, mitFarbe = false, schwelle = 1 } = {
         const f = v => (v > 0.2 ? v - 0.2 : v > -0.2 ? 0 : 0.7 * (v + 0.2));
         s += RHO * 0.5 * (f(vl) + f(vr));
       }
+      // Pinsel (nur beim Verfeinern): gemalt zählt kräftig als Stück, radiert als Hintergrund
+      if (pm) s += PINSEL * 0.5 * ((xl >= 0 && xl < w ? pm[y * w + xl] : 0) + (xr >= 0 && xr < w ? pm[y * w + xr] : 0));
       reg[u] = s;
     }
     for (let u = 0; u <= U; u++) {
@@ -361,10 +371,12 @@ function symKontur(ctx, { erwartung = null, mitFarbe = false, schwelle = 1 } = {
     // Ende: aus einem Zustand der Vorzeile nach „danach leer“ – schmal (Bogen der Bodenellipse)
     // oder breit, wenn dort die Standfläche als waagrechte Kante liegt
     let bestPrev = NEG, bestPrevU = -1;
-    for (let u = 0; u <= U; u++) {
+    // vorgegebene Unterkante: nur dort enden, dafür in jeder Breite
+    const endeFrei = yB == null || Math.abs(y - 1 - yB) <= TG;
+    for (let u = 0; endeFrei && u <= U; u++) {
       // breit enden nur, wenn die Seitenkanten darunter wirklich aufhören (sonst ist es z. B.
       // eine Glasurgrenze)
-      const bonus = u <= uRand ? 0 : kappeVor[u] > capRausch + 0.08 && !seitenLaufenWeiter(y, u, 1) ? ALPHA_S * 2 * (kappeVor[u] - capRausch) : NEG;
+      const bonus = yB != null || u <= uRand ? 0 : kappeVor[u] > capRausch + 0.08 && !seitenLaufenWeiter(y, u, 1) ? ALPHA_S * 2 * (kappeVor[u] - capRausch) : NEG;
       if (prev[u] + bonus > bestPrev) { bestPrev = prev[u] + bonus; bestPrevU = u; }
     }
     if (bestPrev - C_OFF > post) { post = bestPrev - C_OFF; postFrom[y] = bestPrevU; } else postFrom[y] = -1;
@@ -377,14 +389,16 @@ function symKontur(ctx, { erwartung = null, mitFarbe = false, schwelle = 1 } = {
     }
     let preW = NEG, preA = -1;
     for (let u = 0; u <= U; u++) {
-      if (u < 2) { cur[u] = NEG; continue; }
+      if (u < 2 || u > uLim || !zeileFrei) { cur[u] = NEG; continue; }
       let extra = reg[u] - c0;
       if (erwartung) {
         if (ue >= 0) { const z = (u - ue) / erwartung.s[y]; extra -= erwartung.kraft * Math.log(1 + z * z); } else extra -= erwartung.kraft * 2.5;
       }
       // Eintritt nur schmal (Spitze der Öffnungsellipse) oder ganz oben am Bildrand
       let eintritt = NEG;
-      if (u <= uRand || y === 0) eintritt = -C_ON + ALPHA_S * symKante(lxx[u], lxy[u], lyy[u], rxx[u], rxy[u], ryy[u], 0, 1);
+      // vorgegebene Oberkante: nur dort beginnen, dafür in jeder Breite
+      if (yA != null) eintritt = Math.abs(y - yA) <= TG ? -C_ON + ALPHA_S * Math.max(symKante(lxx[u], lxy[u], lyy[u], rxx[u], rxy[u], ryy[u], 0, 1), 2 * Math.max(0, kappe[u] - capRausch)) : NEG;
+      else if (u <= uRand || y === 0) eintritt = -C_ON + ALPHA_S * symKante(lxx[u], lxy[u], lyy[u], rxx[u], rxy[u], ryy[u], 0, 1);
       else if (kappe[u] > capRausch + 0.08 && !seitenLaufenWeiter(y - 1, u, -1)) eintritt = -C_ON + ALPHA_S * 2 * (kappe[u] - capRausch);
       let best = eintritt, arg = -1;
       const kante = dw => ALPHA_S * symKante(lxx[u], lxy[u], lyy[u], rxx[u], rxy[u], ryy[u], dw, 1 / (1 + dw * dw));
@@ -555,9 +569,21 @@ function pinsel(q, brush, w, h, IW, IH, x0, y0) {
  * crop: Rahmen (relativ), sens: Empfindlichkeit 0–100, brush: Pinselstriche
  * hint: { gruppe, familie, guide: {x0,y0,x1,y1}, blick: Grad nach unten (Lagesensor), brennweite,
  *         punkt: {x,y} angetipptes Stück (relativ) }
+ * fein: Vorgaben aus „Umriss verfeinern“ (alles relativ, jeweils null = nicht gesetzt):
+ *       { achse: {x0,y0,x1,y1} Mittelachse durch zwei Punkte, oben, unten: Ober-/Unterkante,
+ *         links, rechts: äußerste Punkte des Körpers (ohne Henkel) }
+ *       Pinselstriche wirken dann direkt auf den Umriss.
  */
-export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS, brush = [], hint = {} } = {}) {
+export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS, brush = [], hint = {}, fein = null } = {}) {
   const { width: IW, height: IH, data } = src;
+  if (fein) {
+    // Rahmen so erweitern, dass die Vorgaben sicher darin liegen
+    crop = { ...crop };
+    if (fein.links != null) crop.x0 = Math.min(crop.x0, fein.links - 0.03);
+    if (fein.rechts != null) crop.x1 = Math.max(crop.x1, fein.rechts + 0.03);
+    if (fein.oben != null) crop.y0 = Math.min(crop.y0, fein.oben - 0.03);
+    if (fein.unten != null) crop.y1 = Math.max(crop.y1, fein.unten + 0.03);
+  }
   const x0 = clamp(Math.round(crop.x0 * IW), 0, IW - 16);
   const x1 = clamp(Math.round(crop.x1 * IW), x0 + 16, IW);
   const y0 = clamp(Math.round(crop.y0 * IH), 0, IH - 16);
@@ -570,10 +596,32 @@ export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS, brush =
   const band = Math.max(3, Math.round(0.035 * Math.min(w, h)));
 
   // Pinsel: „Entfernen“ löscht dort die Kanten, „Hinzufügen“ zählt im zweiten Durchgang als Stück
+  // (beim Verfeinern wirken beide direkt auf den Umriss)
+  let pm = null;
   if (brush.length) {
     const m = new Float32Array(n);
     pinsel(m, brush, w, h, IW, IH, x0, y0);
     for (let k = 0; k < n; k++) if (m[k] < 0) { T.xx[k] = T.xy[k] = T.yy[k] = 0; T.E[k] = 0; }
+    if (fein) pm = m;
+  }
+  // Vorgaben in Pixeln des Ausschnitts
+  const grenzen = fein ? {
+    top: fein.oben != null ? fein.oben * IH - y0 : null,
+    bottom: fein.unten != null ? fein.unten * IH - y0 : null,
+    xL: fein.links != null ? fein.links * IW - x0 : null,
+    xR: fein.rechts != null ? fein.rechts * IW - x0 : null,
+  } : null;
+  let festeAchse = null;
+  if (fein?.achse) {
+    const { x0: ax0, y0: ay0, x1: ax1, y1: ay1 } = fein.achse;
+    const pa = [ax0 * IW - x0, ay0 * IH - y0], pb = [ax1 * IW - x0, ay1 * IH - y0];
+    const dy = pb[1] - pa[1];
+    const b = Math.abs(dy) > 1 ? (pb[0] - pa[0]) / dy : 0;
+    festeAchse = y => pa[0] + b * (y - pa[1]);
+  } else if (grenzen && grenzen.xL != null && grenzen.xR != null) {
+    // Ein Drehteil ist symmetrisch: die Achse liegt mitten zwischen den äußersten Punkten
+    const a = (grenzen.xL + grenzen.xR) / 2;
+    festeAchse = () => a;
   }
 
   // Aufnahme-Maske im Ausschnitt
@@ -581,7 +629,7 @@ export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS, brush =
     x0: hint.guide.x0 * IW - x0, x1: hint.guide.x1 * IW - x0, y0: hint.guide.y0 * IH - y0, y1: hint.guide.y1 * IH - y0,
   } : null;
   const ctx = {
-    w, h, T, E: T.E, lab, band, q: null, achse: null,
+    w, h, T, E: T.E, lab, band, q: null, achse: null, pm, grenzen,
     // Kamera: optische Achse in der Bildmitte, Brennweite (Anteil der langen Bildseite), Neigung
     geo: {
       cy: IH / 2 - y0,
@@ -598,7 +646,7 @@ export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS, brush =
   const mitte = punkt ?? (guide ? (guide.x0 + guide.x1) / 2 : w / 2);
   const streu = punkt != null ? 0.07 : guide ? 0.18 : 0.24;
   let best = null;
-  for (const k of achseSuchen(T, w, h, mitte, streu)) {
+  for (const k of festeAchse ? [] : achseSuchen(T, w, h, mitte, streu)) {
     const p = symKontur({ ...ctx, achse: () => k.a }, { schwelle });
     // Ein Drehteil ist auch innen spiegelgleich: Farben links und rechts der Achse ähneln sich
     // (Helligkeit zählt wenig – eine Seite liegt oft im Schatten). Wand + Gefäß ist das nicht.
@@ -608,9 +656,9 @@ export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS, brush =
     if (!best || p.wert > best.p.wert) best = { k, p };
   }
   // 2. Achse nachführen (Handy etwas schief, Stück nicht genau im Bild ausgerichtet)
-  let achse = () => best.k.a;
-  let pfad = best.p;
-  for (let it = 0; it < 1; it++) {
+  let achse = festeAchse || (() => best.k.a);
+  let pfad = festeAchse ? symKontur({ ...ctx, achse }, { schwelle }) : best.p;
+  for (let it = 0; it < (festeAchse ? 0 : 1); it++) {
     const m = seitenMessen({ ...ctx, achse }, pfad.u);
     const rows = [];
     for (let y = 0; y < h; y++) {
@@ -639,9 +687,29 @@ export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS, brush =
   const pfad2 = symKontur(ctx, { erwartung: erwartungAus(erg, h), mitFarbe: true, schwelle });
   const erg2 = messen(ctx, pfad2, hint);
   if (erg2) erg = erg2;
+  if (grenzen) erg = breiteAnpassen(erg, grenzen);
 
   const henkel = henkelFinden(ctx, erg, brush.length > 0);
-  return ergebnis(erg, henkel, { IW, IH, x0, y0, w, h });
+  return ergebnis(erg, henkel, { IW, IH, x0, y0, w, h, manuell: !!fein });
+}
+
+// Vorgegebene äußerste Punkte: Profil so skalieren, dass die breiteste Stelle sie genau trifft
+function breiteAnpassen(erg, G) {
+  if (G.xL == null && G.xR == null) return erg;
+  let { profil, silh } = erg;
+  for (let it = 0; it < 2; it++) {
+    let ym = -1;
+    for (let y = 0; y < silh.length; y++) if (silh[y] > 0 && (ym < 0 || silh[y] > silh[ym])) ym = y;
+    if (ym < 0) return erg;
+    const a = erg.achse(ym);
+    const ziel = [G.xL != null ? a - G.xL : null, G.xR != null ? G.xR - a : null].filter(v => v != null && v > 2);
+    if (!ziel.length) return erg;
+    const f = ziel.reduce((s, v) => s + v, 0) / ziel.length / silh[ym];
+    if (!(f > 0.6 && f < 1.6) || Math.abs(f - 1) < 0.005) break;
+    profil = Float32Array.from(profil, v => v * f);
+    silh = erg.silhAus(profil);
+  }
+  return { ...erg, profil, silh };
 }
 
 function spiegelUngleichheit(lab, w, h, a, us) {
@@ -690,9 +758,10 @@ function farbmodelleAus(lab, us, achse, w, h, band) {
 
 // Gefundene Kontur auswerten: Sicherheit je Seite, Leitseite, dann Profil
 function messen(ctx, pfad, hint) {
-  const { h, w, q, achse } = ctx;
+  const { h, w, q, achse, pm } = ctx;
   const m = seitenMessen(ctx, pfad.u);
   const hw = new Float32Array(h).fill(-1), wt = new Float32Array(h);
+  const fest = new Uint8Array(h); // Kante vom Pinsel bestimmt: gilt, Formwissen ergänzt hier nicht
   const rL = new Float32Array(h).fill(-1), rR = new Float32Array(h).fill(-1);
   let top = -1, bottom = -1, sL = 0, sR = 0, nb = 0;
   for (let y = 0; y < h; y++) {
@@ -711,6 +780,12 @@ function messen(ctx, pfad, hint) {
       if (n) c = 0.7 * c + 0.3 * clamp((inn - aus) / (2 * n), 0, 1);
     }
     wt[y] = clamp(c, 0.05, 1);
+    if (pm) {
+      for (const side of [-1, 1]) {
+        const xi = Math.round(a + side * (u - 2)), xo = Math.round(a + side * (u + 2));
+        if ((xi >= 0 && xi < w && pm[y * w + xi] > 0) || (xo >= 0 && xo < w && pm[y * w + xo] < 0)) { fest[y] = 1; wt[y] = 1; }
+      }
+    }
     if (m.xL[y] >= 0) rL[y] = a - m.xL[y];
     if (m.xR[y] >= 0) rR[y] = m.xR[y] - a;
     if (top < 0) top = y;
@@ -718,7 +793,7 @@ function messen(ctx, pfad, hint) {
     sL += m.cL[y]; sR += m.cR[y]; nb++;
   }
   if (nb < 20 || bottom - top < 24) return null;
-  return profilBerechnen(ctx, achse, hw, wt, top, bottom, hint, { rL, rR, cL: m.cL, cR: m.cR, leit: sL >= sR ? -1 : 1, qL: sL / nb, qR: sR / nb });
+  return profilBerechnen(ctx, achse, hw, wt, top, bottom, hint, { fest, rL, rR, cL: m.cL, cR: m.cR, leit: sL >= sR ? -1 : 1, qL: sL / nb, qR: sR / nb });
 }
 
 function profilBerechnen(ctx, achse, hw, wt, top, bottom, hint, info) {
@@ -851,6 +926,7 @@ function profilBerechnen(ctx, achse, hw, wt, top, bottom, hint, info) {
       lam *= 1 / (1 + z * z * 0.25);
     }
     lam = clamp(lam * 1.4, 0, 1);
+    if (info.fest[clamp(Math.round(zeilen[i]), 0, h - 1)]) lam = 1;
     profil[i] = lam * (mw[i] > 0 ? r[i] : rm) + (1 - lam) * rm;
     anteil[i] = lam;
     ergaenzt += 1 - lam;
@@ -865,6 +941,7 @@ function profilBerechnen(ctx, achse, hw, wt, top, bottom, hint, info) {
     ...info, achse,
     top, bottom, randZeile, bodenZeile, hImg, hTrue, neigung: Math.abs(Math.sin(aMitte)), blick: e,
     profil: glatt, anteil, ergaenzt: ergaenzt / M, form, silh, sdModell: form.sd, fitRest: fitRest(m48, w48, form.profil),
+    silhAus: prof => P.silhouette(Ys, Float64Array.from(prof, v => v * HD), h),
     // Bildpunkt → Lage am Stück (x: Abstand zur Achse, t: 0 = Rand … 1 = Boden; beides in Höhen)
     tVon: y => (Yr - P.Y(y)) / HD,
     xVon: (dx, y) => (dx * P.zc(P.Y(y))) / geo.f / HD,
@@ -1029,7 +1106,7 @@ function henkelFinden(ctx, erg, mitPinsel) {
 // Ergebnis zusammenstellen
 // ---------------------------------------------------------------------------
 
-function ergebnis(erg, henkel, { IW, IH, x0, y0, w, h }) {
+function ergebnis(erg, henkel, { IW, IH, x0, y0, w, h, manuell = false }) {
   const toRel = (x, y) => [round4((x + x0) / IW), round4((y + y0) / IH)];
   const profile = Array.from(erg.profil, v => round4(v));
   // Körperumriss im Bild (mit Ellipsen an Rand und Boden)
@@ -1091,7 +1168,9 @@ function ergebnis(erg, henkel, { IW, IH, x0, y0, w, h }) {
       henkelSeite: henkel ? sideName(henkel.side) : null,
       // schwache Kanten oder viel aus dem Formwissen ergänzt: Umriss bitte prüfen
       // passt schlecht zu jeder bekannten Form oder viel ergänzt: Umriss bitte prüfen
-      unsicher: erg.fitRest > 0.006 || erg.ergaenzt > 0.15,
+      // von Hand verfeinert: gilt als geprüft
+      unsicher: !manuell && (erg.fitRest > 0.006 || erg.ergaenzt > 0.15),
+      manuell,
     },
     outline: {
       koerper,

@@ -188,18 +188,46 @@ export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS, brush =
   });
   hw = smooth(median(hw, 5), Math.max(1, Math.round(hw.length * 0.008)));
 
-  // Perspektive ausgleichen: Von leicht oben fotografiert ist die Öffnung eine Ellipse.
-  // Ihre hintere Kante wächst oben schnell auf volle Breite – die Zeile, ab der die
-  // Breite kaum noch zunimmt, ist die Ellipsenmitte. Aus dem Verhältnis Tiefe/Breite
-  // folgt die Kameraneigung und damit, wie tief die Bodenellipse unten reicht.
+  // Perspektive ausgleichen: Von oben fotografiert ist die Öffnung eine Ellipse, deren
+  // hintere Hälfte oben die Silhouette bildet. An diesen Bogen wird eine Ellipse angepasst
+  // (robust gegen Glanzlichter am Rand); ihre Mitte ist die eigentliche Randhöhe.
+  // Die Neigung (Tiefe/Breite) bestimmt dann, wie tief die Bodenellipse unten reicht.
   const L = hw.length;
   const lim = Math.round(L * 0.15);
-  let ryTop = 0;
-  while (ryTop < lim && (hw[Math.min(L - 1, ryTop + 4)] - hw[ryTop]) / 4 > 0.35) ryTop++;
-  const tilt = Math.min(0.5, ryTop / Math.max(1, hw[ryTop]));
-  let baseW = 0;
-  for (let i = L - 1 - lim; i < L; i++) baseW = Math.max(baseW, hw[i]);
-  const ryBot = Math.min(Math.round(L * 0.12), Math.round(tilt * baseW));
+  let walk = 0;
+  while (walk < lim && (hw[Math.min(L - 1, walk + 4)] - hw[walk]) / 4 > 0.35) walk++;
+  const rimEnd = Math.min(Math.round(L * 0.2), 2 * walk + 10);
+  let rx = 0;
+  for (let i = 0; i <= rimEnd; i++) rx = Math.max(rx, hw[i]);
+  // Für jede Zeile im Bogen: Abstand zur Spitze = ry · (1 − √(1 − (w/rx)²)) → lineare Regression
+  // nur der Teil, in dem die Breite von oben her zunimmt (bis zur ersten vollen Breite)
+  let rimMax = 0;
+  while (rimMax < rimEnd && hw[rimMax] < rx * 0.99) rimMax++;
+  const fit = [];
+  for (let i = 0; i <= rimMax; i++) {
+    const q = hw[i] / rx;
+    if (q >= 0.25 && q <= 0.95) fit.push([1 - Math.sqrt(1 - q * q), i]);
+  }
+  let ryTop = walk;
+  if (fit.length >= 4) {
+    const mf = fit.reduce((a, p) => a + p[0], 0) / fit.length;
+    const mi = fit.reduce((a, p) => a + p[1], 0) / fit.length;
+    let cov = 0, vf = 0;
+    for (const [f, i] of fit) { cov += (f - mf) * (i - mi); vf += (f - mf) ** 2; }
+    if (vf > 1e-6) {
+      const ry = cov / vf;
+      const tip = mi - ry * mf;
+      if (ry > 0) ryTop = clamp(Math.round(tip + ry), walk, Math.max(walk, rimMax));
+    }
+  }
+  const tilt = Math.min(0.5, ryTop / Math.max(1, rx));
+
+  // Unten: sichtbaren Bogen der Bodenellipse messen und mit der Neigung von oben abgleichen
+  let up = 0;
+  while (up < lim && (hw[Math.max(0, L - 5 - up)] - hw[L - 1 - up]) / 4 > 0.35) up++;
+  const footW = hw[L - 1 - up];
+  const expected = tilt * footW;
+  const ryBot = Math.min(Math.round(L * 0.12), Math.round(clamp(up, expected * 0.7, expected * 1.4)));
   hw = hw.slice(ryTop, L - ryBot);
   top += ryTop;
   bottom -= ryBot;

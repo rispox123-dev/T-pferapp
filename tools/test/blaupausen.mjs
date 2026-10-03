@@ -19,7 +19,7 @@ for (let i = start; i < start + anzahl; i++) {
   const bp = { profile: res.profile, handles: res.handles, points: findPoints(res.profile) };
   const png = PNG.sync.write(PNG.sync.read(readFileSync(`${ordner}${seed}.png`)));
   html += `<div style="display:flex;gap:4px;background:#fff;padding:4px;border-radius:8px"><img src="data:image/png;base64,${png.toString('base64')}" style="width:200px;height:auto;align-self:start">
-    <div style="width:260px">${renderBlueprint(bp, { title: `${res.form.label}`, info: [`Test ${seed}`], values: { hoehe: 10 }, interactive: false, seed })}</div></div>`;
+    <div style="width:260px">${renderBlueprint(bp, { title: `${res.form.label}`, info: [`Test ${seed}`], values: { hoehe: 10 }, interactive: false, seed, papier: true })}</div></div>`;
 }
 html += '</div>';
 const pfad = new URL('./ausgabe/blaupausen.html', import.meta.url).pathname;

@@ -1241,7 +1241,7 @@ async function viewFiring(id) {
 
     <div class="card">
       <h2>Glasurauftrag</h2>
-      ${(f.lagen || []).map((l, i) => `<dl class="facts" style="${i ? 'margin-top:12px;padding-top:12px;border-top:1px solid var(--border)' : ''}">
+      ${(f.lagen || []).map((l, i) => `<dl class="facts" style="${i ? 'margin-top:12px;padding-top:12px;border-top:1px solid var(--line)' : ''}">
         <dt>${f.lagen.length > 1 ? `${i + 1}. Glasur` : 'Glasur'}</dt><dd>${l.glazeId ? `<a href="#/glasuren/${l.glazeId}">${esc(l.glazeName)}</a>` : esc(l.glazeName || '–')}</dd>
         <dt>Auftrag</dt><dd>${esc(l.art || 'Tauchen')}</dd>
         <dt>${l.art === 'Tauchen' || !l.art ? 'Tauchdauer' : 'Dauer'}</dt><dd>${withUnit(l.dauer, 'Sek.')}</dd>

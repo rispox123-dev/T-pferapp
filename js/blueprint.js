@@ -283,7 +283,8 @@ const pfad = (pts, closed) => pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixe
  * bp: { profile, points, handles }
  * values/pos: eingetragene Maße je Stelle (cm)
  */
-export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = [], interactive = true, seed = 1 } = {}) {
+// papier: eigenes Aquarellpapier zeichnen (sonst liegt die Zeichnung direkt auf dem Papier der App)
+export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = [], interactive = true, seed = 1, papier = false } = {}) {
   const uid = `bp${++svgCounter}`;
   // von Hand geschrieben: jede Beschriftung sitzt ein wenig anders
   const hand = rng(seed);
@@ -466,9 +467,9 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
       </feDiffuseLighting>
       <!-- Relief nur andeuten: hell lassen, Täler leicht abdunkeln -->
       <feComponentTransfer in="licht" result="relief">
-        <feFuncR type="linear" slope=".42" intercept=".66"/>
-        <feFuncG type="linear" slope=".42" intercept=".66"/>
-        <feFuncB type="linear" slope=".42" intercept=".66"/>
+        <feFuncR type="linear" slope=".3" intercept=".73"/>
+        <feFuncG type="linear" slope=".3" intercept=".73"/>
+        <feFuncB type="linear" slope=".3" intercept=".73"/>
       </feComponentTransfer>
       <feBlend in="relief" in2="SourceGraphic" mode="multiply" result="papier"/>
       <feTurbulence type="fractalNoise" baseFrequency="0.006" numOctaves="3" seed="${(seed % 53) + 7}" result="wolken"/>
@@ -494,8 +495,8 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
   </defs>
   <clipPath id="${uid}-c"><rect width="${W}" height="${H}"/></clipPath>
   <g id="${uid}" clip-path="url(#${uid}-c)">
-    <rect width="${W}" height="${H}" fill="${PAPIER}" filter="url(#${uid}-papier)"/>
-    <rect width="${W}" height="${H}" fill="url(#${uid}-rand)"/>
+    ${papier ? `<rect width="${W}" height="${H}" fill="${PAPIER}" filter="url(#${uid}-papier)"/>
+    <rect width="${W}" height="${H}" fill="url(#${uid}-rand)"/>` : ''}
     <g filter="url(#${uid}-blei)">
     ${titleSvg}
     <g class="shape">${shape}</g>

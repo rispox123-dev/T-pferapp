@@ -73,9 +73,17 @@ export function knicke(prof, { fenster = 0.04, winkel = 28, sigma = rauschen(pro
   // Stufen: senkrechter Sprung zwischen zwei Messstellen (z. B. Fußring)
   const sprung = i => Math.abs(prof[i + 1] - prof[i]);
   const minSprung = Math.max(6 * sigma, 2.5 * dt);
+  // eine echte Stufe ändert die Wand dauerhaft; ein Zacken, der gleich zurückspringt, ist ein Messfehler
+  const k2 = Math.max(3, Math.round(0.02 * (n - 1)));
+  const bleibt = i => {
+    const vor = [], nach = [];
+    for (let j = Math.max(0, i - k2); j <= i; j++) vor.push(prof[j]);
+    for (let j = i + 1; j <= Math.min(n - 1, i + 1 + k2); j++) nach.push(prof[j]);
+    return Math.abs(median(vor) - median(nach)) > 0.6 * sprung(i);
+  };
   const stufen = [];
   for (let i = 1; i < n - 2; i++) {
-    if (sprung(i) > minSprung && sprung(i) >= sprung(i - 1) && sprung(i) > sprung(i + 1)) {
+    if (sprung(i) > minSprung && sprung(i) >= sprung(i - 1) && sprung(i) > sprung(i + 1) && bleibt(i)) {
       stufen.push(i);
       set.add(i); set.add(i + 1);
     }
@@ -144,9 +152,24 @@ function abschnitt(prof, a, b, dt, band, tolGerade, sigma) {
  * Profil begradigen. prof: Radius/Höhe an n Stellen (Öffnung … Boden).
  * band: Glättungsbreite in Anteilen der Höhe; gerade: Toleranz für exakt gerade Abschnitte.
  */
-export function begradigen(prof, { band = 0.05, gerade: tolGerade = 0.0035, ...opt } = {}) {
+// Einzelne Zacken (z. B. an einer Glasurgrenze falsch gemessen) durch den Median der
+// Nachbarschaft ersetzen; der Median lässt echte Stufen stehen
+export function zackenWeg(prof) {
   const n = prof.length;
-  if (n < 8) return Array.from(prof);
+  const sigma = rauschen(prof);
+  const r = 3;
+  return Array.from(prof, (v, i) => {
+    const nb = [];
+    for (let j = Math.max(0, i - r); j <= Math.min(n - 1, i + r); j++) nb.push(prof[j]);
+    const m = median(nb);
+    return Math.abs(v - m) > Math.max(5 * sigma, 0.01) ? m : v;
+  });
+}
+
+export function begradigen(roh, { band = 0.05, gerade: tolGerade = 0.0035, ...opt } = {}) {
+  const n = roh.length;
+  if (n < 8) return Array.from(roh);
+  const prof = zackenWeg(roh);
   const dt = 1 / (n - 1);
   const sigma = rauschen(prof);
   const ks = knicke(prof, { sigma, ...opt });

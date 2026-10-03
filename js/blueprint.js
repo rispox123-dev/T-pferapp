@@ -17,91 +17,112 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 // Markante Stellen
 // ---------------------------------------------------------------------------
 
-export function findPoints(profile) {
+// Begriffe am Gefäß (wie am menschlichen Körper, von oben nach unten):
+//   Öffnung  – oberer Rand (Mündung)
+//   Schulter – oberer Teil des Körpers, wo die Wand vom Bauch zur engeren Öffnung
+//              (oder Taille) hin einbiegt; Stelle der stärksten Biegung dort
+//   Bauch    – größter Durchmesser, nur wenn die Wand darüber und darunter wieder enger wird
+//   Taille   – Einziehung: engste Stelle zwischen zwei weiteren Teilen
+//   Fuß      – Standfläche unten; Fußring, wenn sie durch eine Stufe/Kante abgesetzt ist
+// Eine Stelle wird nur markiert, wenn sich die Form dort wirklich ändert – eine gerade
+// oder gleichmäßig konische Wand hat weder Bauch noch Taille.
+export function findPoints(roh) {
+  const profile = begradigen(roh);
   const n = profile.length;
   const rmax = Math.max(...profile);
-  const minProm = 0.04 * rmax;
-  const lo = Math.round(n * 0.08);
-  const hi = Math.round(n * 0.92);
-  const win = 3;
-  const maxes = [];
-  const mins = [];
-
-  for (let i = lo; i <= hi; i++) {
-    const v = profile[i];
-    let isMax = true, isMin = true;
-    for (let j = i - win; j <= i + win; j++) {
-      if (j === i || j < 0 || j >= n) continue;
-      if (profile[j] > v) isMax = false;
-      if (profile[j] < v) isMin = false;
-    }
-    const before = profile.slice(0, i + 1);
-    const after = profile.slice(i);
-    if (isMax) {
-      const prom = v - Math.max(Math.min(...before), Math.min(...after));
-      if (prom > minProm) maxes.push({ i, prom });
-    }
-    if (isMin) {
-      const prom = Math.min(Math.max(...before), Math.max(...after)) - v;
-      if (prom > minProm) mins.push({ i, prom });
-    }
-  }
-
-  // Höchstens zwei Stellen je Art; zwei Bäuche brauchen eine echte Einschnürung dazwischen
-  const pick = (list, isMax, max) => {
-    const out = [];
-    for (const c of list.sort((a, b) => b.prom - a.prom)) {
-      if (out.length >= max) break;
-      const ok = out.every(o => {
-        const between = profile.slice(Math.min(o.i, c.i), Math.max(o.i, c.i) + 1);
-        return isMax
-          ? Math.min(...between) < Math.min(profile[o.i], profile[c.i]) - minProm
-          : Math.max(...between) > Math.max(profile[o.i], profile[c.i]) + minProm;
-      });
-      if (ok) out.push(c);
-    }
-    return out;
-  };
+  // spürbare Formänderung: 5 % des größten Radius, mindestens 1,5 % der Höhe
+  const minProm = Math.max(0.05 * rmax, 0.015);
+  const lo = Math.round(n * 0.06), hi = Math.round(n * 0.94);
   const t = i => Math.round((i / (n - 1)) * 1000) / 1000;
   const m = i => Math.round(2 * profile[i] * 10000) / 10000;
+  const maxBis = (a, b) => { let v = -Infinity; for (let i = a; i <= b; i++) v = Math.max(v, profile[i]); return v; };
+  const minBis = (a, b) => { let v = Infinity; for (let i = a; i <= b; i++) v = Math.min(v, profile[i]); return v; };
+
+  // Bauch: weiteste Stelle innen, oberhalb und unterhalb deutlich enger
+  let bauch = -1;
+  for (let i = lo; i <= hi; i++) {
+    const v = profile[i];
+    if (bauch >= 0 && v <= profile[bauch]) continue;
+    if (v - minBis(0, i) > minProm && v - minBis(i, n - 1) > minProm) bauch = i;
+  }
+  if (bauch >= 0 && maxBis(0, n - 1) > profile[bauch] + 1e-6) {
+    // es gibt eine weitere Stelle (z. B. ausgestellte Öffnung): Bauch nur, wenn er dort ein echtes Maximum ist
+    const umg = Math.round(n * 0.04);
+    if (profile[bauch] < maxBis(Math.max(0, bauch - umg), Math.min(n - 1, bauch + umg)) - 1e-6) bauch = -1;
+  }
+
+  // Taille: engste Stelle mit deutlich weiteren Teilen darüber und darunter
+  const taillen = [];
+  for (let i = lo; i <= hi; i++) {
+    const v = profile[i];
+    const umg = Math.round(n * 0.03);
+    if (v > minBis(Math.max(0, i - umg), Math.min(n - 1, i + umg)) + 1e-9) continue;
+    const prom = Math.min(maxBis(0, i), maxBis(i, n - 1)) - v;
+    if (prom > minProm && !taillen.some(c => Math.abs(c.i - i) <= umg)) taillen.push({ i, prom });
+  }
+  // höchstens eine Taille oberhalb und eine unterhalb des Bauchs
+  const wahl = list => list.sort((x, y) => y.prom - x.prom)[0];
+  const tl = bauch >= 0
+    ? [wahl(taillen.filter(c => c.i < bauch)), wahl(taillen.filter(c => c.i > bauch))].filter(Boolean)
+    : [wahl(taillen)].filter(Boolean);
+
+  // Fußring: unten ein abgesetztes Stück mit (fast) senkrechter Wand, darüber eine Stufe bzw.
+  // ein Knick, an dem die Wand deutlich einspringt. Ein runder Boden ist kein Fußring.
+  const dt = 1 / (n - 1);
+  const k = Math.max(3, Math.round(n * 0.03));
+  let ring = false;
+  for (let i = Math.round(n * 0.7); i <= n - 1 - k && !ring; i++) {
+    let sx = 0, sy = 0, sxx = 0, sxy = 0, c = 0;
+    for (let j = i; j < n; j++) { const x = j * dt, y = profile[j]; sx += x; sy += y; sxx += x * x; sxy += x * y; c++; }
+    const sB = (c * sxy - sx * sy) / (c * sxx - sx * sx || 1);
+    let rest = 0;
+    for (let j = i; j < n; j++) rest = Math.max(rest, Math.abs(profile[j] - (sy / c + sB * (j * dt - sx / c))));
+    const sprung = Math.abs(profile[i - k] - profile[i] - -sB * k * dt);
+    if (Math.abs(sB) < 0.5 && rest < 0.006 && sprung > Math.max(0.06 * rmax, 0.015)) ring = true;
+  }
+
+  // Schulter: über dem Bauch biegt die Wand zur engeren Öffnung/Taille ein; Stelle der
+  // stärksten Biegung, deutlich vom Bauch abgesetzt
+  let schulter = -1;
+  if (bauch >= 0) {
+    const oben = tl.find(c => c.i < bauch)?.i ?? 0;
+    if (profile[bauch] - profile[oben] > 2 * minProm) {
+      const d = Math.max(2, Math.round(n * 0.03));
+      let best = 0;
+      for (let i = oben + d; i <= bauch - d; i++) {
+        const kr = profile[i - d] - 2 * profile[i] + profile[i + d]; // < 0: Wand biegt nach innen
+        if (-kr > best) { best = -kr; schulter = i; }
+      }
+      const abstand = Math.round(n * 0.07);
+      if (schulter >= 0 && (bauch - schulter < abstand || schulter - oben < abstand || best < 0.004
+        // sichtbar enger als der Bauch und sichtbar weiter als Öffnung/Taille darüber
+        || profile[bauch] - profile[schulter] < 0.5 * minProm || profile[schulter] - profile[oben] < minProm)) schulter = -1;
+    }
+  }
 
   const points = [
     { key: 'hoehe', label: 'Höhe', t: null, m: 1 },
     { key: 'rand', label: 'Ø Öffnung', t: 0, m: m(0) },
   ];
-  const bulges = pick(maxes, true, 2);
-  bulges.forEach((c, idx) => {
-    if (idx === 0) points.push({ key: 'bauch', label: 'Ø Bauch', t: t(c.i), m: m(c.i) });
-    else points.push({ key: 'bauch2', label: c.i < bulges[0].i ? 'Ø Schulter' : 'Ø Wölbung', t: t(c.i), m: m(c.i) });
+  if (schulter >= 0) points.push({ key: 'schulter', label: 'Ø Schulter', t: t(schulter), m: m(schulter) });
+  if (bauch >= 0) points.push({ key: 'bauch', label: 'Ø Bauch', t: t(bauch), m: m(bauch) });
+  tl.sort((x, y) => x.i - y.i).forEach((c, idx) => {
+    points.push({ key: idx ? 'taille2' : 'taille', label: 'Ø Taille', t: t(c.i), m: m(c.i) });
   });
-  // Engstellen: zwischen zwei Wölbungen ist es eine Rille, sonst Hals bzw. Taille
-  let rillen = 0, engen = 0;
-  pick(mins, false, 3).sort((a, b) => a.i - b.i).forEach(c => {
-    const zwischen = bulges.some(b => b.i < c.i) && bulges.some(b => b.i > c.i);
-    if (zwischen) {
-      rillen++;
-      points.push({ key: `rille${rillen}`, label: 'Ø Rille', t: t(c.i), m: m(c.i) });
-    } else {
-      engen++;
-      if (engen === 1) points.push({ key: 'hals', label: c.i < n / 2 ? 'Ø Hals' : 'Ø Taille', t: t(c.i), m: m(c.i) });
-      else points.push({ key: 'hals2', label: 'Ø Einschnürung', t: t(c.i), m: m(c.i) });
-    }
-  });
+  points.push({ key: 'fuss', label: ring ? 'Ø Fußring' : 'Ø Fuß', t: 1, m: m(n - 1) });
+  return points.sort((a, b) => (a.t ?? -1) - (b.t ?? -1));
+}
 
-  // Absatz: kurzer, steiler Sprung im Profil (z. B. Übergang von Schale zu Fußring)
-  const k = Math.max(2, Math.round(n * 0.025));
-  let step = null;
-  for (let i = Math.round(n * 0.1); i < n - k; i++) {
-    const drop = Math.abs(profile[i - k] - profile[i + k]);
-    if (drop > 0.12 * rmax && (!step || drop > step.drop)) step = { i, drop };
-  }
-  if (step && !points.some(p => p.t != null && Math.abs(p.t - t(step.i)) < 0.08) && t(step.i) < 0.95) {
-    const wide = Math.max(profile[step.i - k], profile[step.i + k]);
-    points.push({ key: 'absatz', label: step.i > n * 0.6 ? 'Ø Fußansatz' : 'Ø Absatz', t: t(step.i), m: Math.round(2 * wide * 10000) / 10000 });
-  }
+// Frühere Schlüssel und automatische Namen (vor der Umstellung der Begriffe)
+const ALTE_SCHLUESSEL = { hals: 'taille', hals2: 'taille2' };
+const ALTE_NAMEN = new Set(['Ø Öffnung', 'Ø Hals', 'Ø Taille', 'Ø Einschnürung', 'Ø Bauch', 'Ø Schulter', 'Ø Wölbung', 'Ø Rille', 'Ø Absatz', 'Ø Fußansatz', 'Ø Boden', 'Ø Fuß', 'Ø Fußring']);
+export const istAutoName = name => ALTE_NAMEN.has(name);
 
-  points.push({ key: 'fuss', label: 'Ø Boden', t: 1, m: m(n - 1) });
-  return points;
+// Eingetragene Werte unter früheren Schlüsseln übernehmen
+export function alteWerte(obj = {}) {
+  const out = { ...obj };
+  for (const [alt, neu] of Object.entries(ALTE_SCHLUESSEL)) if (out[neu] == null && out[alt] != null) out[neu] = out[alt];
+  return out;
 }
 
 // Automatisch gefundene Stellen (ohne ausgeblendete) plus eigene Stellen, mit eigenen Namen
@@ -109,7 +130,10 @@ export function effectivePoints(bp) {
   const hidden = bp.hidden || [];
   const labels = bp.labels || {};
   const rAt = profileAt(bp.profile);
-  const pts = bp.points.filter(p => !hidden.includes(p.key)).map(p => ({ ...p, label: labels[p.key] || p.label }));
+  // Stellen immer aus dem (begradigten) Profil neu bestimmen, damit auch ältere Blaupausen
+  // die heutigen Begriffe und Regeln bekommen; frühere automatische Namen zählen nicht als eigene
+  const name = (key, auto) => (labels[key] && !istAutoName(labels[key]) ? labels[key] : auto);
+  const pts = findPoints(bp.profile).filter(p => !hidden.includes(p.key)).map(p => ({ ...p, label: name(p.key, p.label) }));
   for (const c of bp.custom || []) {
     pts.push({ key: c.key, label: labels[c.key] || 'Ø Stelle', t: c.t, m: Math.round(2 * rAt(c.t) * 10000) / 10000, custom: true });
   }
@@ -154,11 +178,10 @@ export function estimate(bp, values = {}, pos = {}) {
 // Zeichnung
 // ---------------------------------------------------------------------------
 
-const INK = '#22302c';
-const INK_SOFT = '#4b5d57';
-const CLAY = '#9a4a24';
-const LINE = '#ffffff';
-const GLAZE = '#b8cdc5';
+// Bleistift auf Aquarellpapier (off-white, kräftige Körnung)
+const GRAPHIT = '#3d3b38';
+const PAPIER = '#f7f5f0';
+const SCHRIFT = '"Bleistift Hand", "Patrick Hand", "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive';
 
 let svgCounter = 0;
 
@@ -177,38 +200,6 @@ export function hashSeed(str = '') {
   let h = 2166136261;
   for (const c of str) h = Math.imul(h ^ c.charCodeAt(0), 16777619);
   return h >>> 0;
-}
-
-// Craquelé-Netz wie bei einer Seladonglasur
-function crackle(W, H, seed) {
-  const rand = rng(seed);
-  const g = 44;
-  const cols = Math.ceil(W / g) + 2;
-  const rows = Math.ceil(H / g) + 2;
-  const P = [];
-  for (let i = 0; i < cols; i++) {
-    P.push([]);
-    for (let j = 0; j < rows; j++) P[i].push([(i - 0.5) * g + (rand() - 0.5) * g * 0.8, (j - 0.5) * g + (rand() - 0.5) * g * 0.8]);
-  }
-  const seg = (a, b) => {
-    const mx = (a[0] + b[0]) / 2 + (rand() - 0.5) * 10;
-    const my = (a[1] + b[1]) / 2 + (rand() - 0.5) * 10;
-    return `M${a[0].toFixed(1)} ${a[1].toFixed(1)}Q${mx.toFixed(1)} ${my.toFixed(1)} ${b[0].toFixed(1)} ${b[1].toFixed(1)}`;
-  };
-  let d = '';
-  let fine = '';
-  for (let i = 0; i < cols; i++) {
-    for (let j = 0; j < rows; j++) {
-      if (i + 1 < cols) d += seg(P[i][j], P[i + 1][j]);
-      if (j + 1 < rows) d += seg(P[i][j], P[i][j + 1]);
-      if (i + 1 < cols && j + 1 < rows) {
-        const r = rand();
-        if (r < 0.3) fine += seg(P[i][j], P[i + 1][j + 1]);
-        else if (r < 0.55) fine += seg(P[i + 1][j], P[i][j + 1]);
-      }
-    }
-  }
-  return { d, fine };
 }
 
 const fmtCm = v => `${Number(v).toLocaleString('de-DE', { maximumFractionDigits: 1 })} cm`;
@@ -294,6 +285,9 @@ const pfad = (pts, closed) => pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixe
  */
 export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = [], interactive = true, seed = 1 } = {}) {
   const uid = `bp${++svgCounter}`;
+  // von Hand geschrieben: jede Beschriftung sitzt ein wenig anders
+  const hand = rng(seed);
+  const schief = (x, y) => ` transform="rotate(${((hand() - 0.5) * 2.4).toFixed(2)} ${x} ${y})"`;
   // auch ältere, noch nicht begradigte Profile sauber zeichnen
   const prof = begradigen(bp.profile);
   const W = 400;
@@ -347,8 +341,11 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
 
   const r0 = rAt(0), rI = Math.max(0, r0 - Math.max(0.018, 0.07 * r0));
   const interior = points.filter(p => p.t != null && p.t > 0 && p.t < 1);
-  let shape = `<path d="${umrissPfad}" class="koerper"/>`;
-  shape += `<path d="${ellipse(0, rI)}" class="oeffnung"/>`;
+  let shape = `<path d="${ellipse(0, rI)}" class="oeffnung"/>`;
+  // Mittellinie als feine Hilfslinie
+  shape += `<path d="M${axis.toFixed(1)} ${(top - 14).toFixed(1)}V${(bottom + 14).toFixed(1)}" class="achse"/>`;
+  // Umriss zweimal leicht versetzt nachgezogen, wie mit dem Bleistift
+  shape += `<path d="${umrissPfad}" class="zweit" transform="translate(.45 .3)"/>`;
   shape += `<path d="${umrissPfad}"/>`;
   shape += `<path d="${ellipse(0, r0)}"/>`;
   shape += `<path d="${ellipse(0, rI)}" class="thin"/>`;
@@ -403,7 +400,7 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
     labels += `<circle cx="${xA.toFixed(1)}" cy="${yA.toFixed(1)}" r="3" class="dot"/>`;
     const rx = side > 0 ? labelX - 8 : 2;
     const rw = side > 0 ? W - labelX + 6 : labelX + 6;
-    labels += `<g class="lbl"${btn(p.key)}><rect x="${rx}" y="${(yL - 19).toFixed(1)}" width="${rw}" height="44" rx="8" class="hit"/>
+    labels += `<g class="lbl"${btn(p.key)}${schief(labelX, yL)}><rect x="${rx}" y="${(yL - 19).toFixed(1)}" width="${rw}" height="44" rx="8" class="hit"/>
       <text x="${labelX}" y="${(yL - 4).toFixed(1)}" class="name"${anchor}>${escXml(p.label)}</text>
       <text x="${labelX}" y="${(yL + 12).toFixed(1)}" class="${vt.cls}"${anchor}>${escXml(vt.text)}</text>
       ${ps ? `<text x="${labelX}" y="${(yL + 24).toFixed(1)}" class="pos"${anchor}>${escXml(ps)}</text>` : ''}</g>`;
@@ -428,43 +425,68 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
 
   const lastLabel = items.length ? items[items.length - 1].yL + 34 : 0;
   const infoTop = Math.max(top + yMax * Hd + 40, lastLabel + 16);
-  const infoSvg = info.map((line, i) => `<text x="22" y="${infoTop + i * 21}" class="info${i ? '' : ' strong'}">${escXml(line)}</text>`).join('');
-  const H = Math.ceil(infoTop + Math.max(0, info.length - 1) * 21 + 26);
+  const infoSvg = info.map((line, i) => `<text x="22" y="${infoTop + i * 22}" class="info${i ? '' : ' strong'}"${schief(22, infoTop + i * 22)}>${escXml(line)}</text>`).join('');
+  const H = Math.ceil(infoTop + Math.max(0, info.length - 1) * 22 + 26);
 
-  const cr = crackle(W, H, seed);
-  const titleSvg = titleLines.map((l, i) => `<text x="${W - 20}" y="${40 + i * 26}" text-anchor="end" class="title">${escXml(l)}</text>`).join('');
+  const titleSvg = titleLines.map((l, i) => `<text x="${W - 20}" y="${40 + i * 26}" text-anchor="end" class="title"${schief(W - 20, 40 + i * 26)}>${escXml(l)}</text>`).join('');
   const half = Math.max(extL, extR) * Hd;
 
   return `<svg class="blueprint" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Blaupause ${escXml(title)}">
   <style>
-    #${uid} text { font-family: "Avenir Next", Futura, "Century Gothic", -apple-system, "Segoe UI", sans-serif; fill: ${INK}; }
-    #${uid} .shape path { fill: none; stroke: ${LINE}; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
-    #${uid} .shape .koerper { fill: #fff; fill-opacity: .1; stroke: none; }
-    #${uid} .shape .oeffnung { fill: ${INK}; fill-opacity: .09; stroke: none; }
-    #${uid} .shape .thin { stroke-width: 1.5; opacity: .8; }
-    #${uid} .shape .dash { stroke-dasharray: 7 6; stroke-width: 2; }
-    #${uid} .lead { fill: none; stroke: ${INK}; stroke-width: 1; opacity: .5; }
-    #${uid} .dot { fill: ${INK}; }
-    #${uid} .dim { fill: none; stroke: ${INK}; stroke-width: 1.2; opacity: .7; stroke-linecap: round; stroke-linejoin: round; }
-    #${uid} .guide { fill: none; stroke: ${INK}; stroke-width: 1; stroke-dasharray: 1.5 4; opacity: .45; }
+    #${uid} text { font-family: ${SCHRIFT}; fill: ${GRAPHIT}; }
+    #${uid} .shape path { fill: none; stroke: ${GRAPHIT}; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; opacity: .9; }
+    #${uid} .shape .zweit { stroke-width: 1.1; opacity: .35; }
+    #${uid} .shape .oeffnung { fill: ${GRAPHIT}; fill-opacity: .07; stroke: none; }
+    #${uid} .shape .achse { stroke-width: .6; stroke-dasharray: 10 4 2 4; opacity: .4; }
+    #${uid} .shape .thin { stroke-width: 1; opacity: .7; }
+    #${uid} .shape .dash { stroke-dasharray: 6 5; stroke-width: 1; opacity: .55; }
+    #${uid} .lead { fill: none; stroke: ${GRAPHIT}; stroke-width: .7; opacity: .6; stroke-linecap: round; }
+    #${uid} .dot { fill: ${GRAPHIT}; opacity: .85; }
+    #${uid} .dim { fill: none; stroke: ${GRAPHIT}; stroke-width: .75; opacity: .75; stroke-linecap: round; stroke-linejoin: round; }
+    #${uid} .guide { fill: none; stroke: ${GRAPHIT}; stroke-width: .6; stroke-dasharray: 1.5 4; opacity: .45; }
     #${uid} .hit { fill: transparent; }
     #${uid} [data-bp-key], #${uid} [data-bp-add] { cursor: pointer; }
-    #${uid} [data-bp-key]:hover .hit, #${uid} [data-bp-key]:focus .hit { fill: rgba(255,255,255,.28); }
+    #${uid} [data-bp-key]:hover .hit, #${uid} [data-bp-key]:focus .hit { fill: ${GRAPHIT}; fill-opacity: .06; }
     #${uid} [data-bp-key]:focus { outline: none; }
-    #${uid} .title { font-size: 23px; font-weight: 500; letter-spacing: .2px; }
-    #${uid} .name { font-size: 12px; fill: ${INK_SOFT}; letter-spacing: .3px; }
-    #${uid} .val { font-size: 16px; font-weight: 600; }
-    #${uid} .val.est { font-weight: 500; font-style: italic; fill: ${INK_SOFT}; }
-    #${uid} .val.empty { font-size: 14px; fill: ${CLAY}; }
-    #${uid} .pos { font-size: 11px; fill: ${INK_SOFT}; }
-    #${uid} .info { font-size: 14px; }
-    #${uid} .info.strong { font-size: 15px; font-weight: 600; }
+    #${uid} .title { font-size: 28px; letter-spacing: .3px; }
+    #${uid} .name { font-size: 14px; opacity: .78; letter-spacing: .2px; }
+    #${uid} .val { font-size: 19px; }
+    #${uid} .val.est { opacity: .72; }
+    #${uid} .val.empty { font-size: 16px; opacity: .55; }
+    #${uid} .pos { font-size: 13px; opacity: .7; }
+    #${uid} .info { font-size: 16px; opacity: .85; }
+    #${uid} .info.strong { font-size: 17px; opacity: 1; }
   </style>
   <defs>
-    <filter id="${uid}-m" x="0" y="0" width="100%" height="100%">
-      <feTurbulence type="fractalNoise" baseFrequency="0.018" numOctaves="3" seed="${seed % 97}"/>
-      <feColorMatrix values="0 0 0 0 0.33  0 0 0 0 0.47  0 0 0 0 0.43  1.3 0 0 0 -0.55"/>
+    <!-- Aquarellpapier: Körnung als Relief (Licht von links oben), dazu leichte Wolken -->
+    <filter id="${uid}-papier" filterUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.11" numOctaves="4" seed="${seed % 89}" result="korn"/>
+      <feDiffuseLighting in="korn" surfaceScale="1.5" diffuseConstant="1" lighting-color="#ffffff" result="licht">
+        <feDistantLight azimuth="225" elevation="58"/>
+      </feDiffuseLighting>
+      <!-- Relief nur andeuten: hell lassen, Täler leicht abdunkeln -->
+      <feComponentTransfer in="licht" result="relief">
+        <feFuncR type="linear" slope=".42" intercept=".66"/>
+        <feFuncG type="linear" slope=".42" intercept=".66"/>
+        <feFuncB type="linear" slope=".42" intercept=".66"/>
+      </feComponentTransfer>
+      <feBlend in="relief" in2="SourceGraphic" mode="multiply" result="papier"/>
+      <feTurbulence type="fractalNoise" baseFrequency="0.006" numOctaves="3" seed="${(seed % 53) + 7}" result="wolken"/>
+      <feColorMatrix in="wolken" values="0 0 0 0 0.60  0 0 0 0 0.58  0 0 0 0 0.55  0 0 0 .22 -.09" result="flecken"/>
+      <feComposite in="flecken" in2="papier" operator="over"/>
     </filter>
+    <!-- Bleistift: Graphit bleibt nur auf den Spitzen der Papierkörnung hängen -->
+    <filter id="${uid}-blei" filterUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="${seed % 71}" result="n"/>
+      <feColorMatrix in="n" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -1.3 1.5" result="zahn"/>
+      <feComposite in="SourceGraphic" in2="zahn" operator="in" result="g"/>
+      <feTurbulence type="fractalNoise" baseFrequency="0.035" numOctaves="1" seed="${(seed % 61) + 3}" result="w"/>
+      <feDisplacementMap in="g" in2="w" scale=".8" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+    <radialGradient id="${uid}-rand" cx="50%" cy="45%" r="75%">
+      <stop offset="70%" stop-color="#6e6a63" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#6e6a63" stop-opacity=".12"/>
+    </radialGradient>
     <mask id="${uid}-hm" maskUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}">
       <rect width="${W}" height="${H}" fill="#fff"/>
       <path d="${umrissPfad}" fill="#000"/>
@@ -472,16 +494,16 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
   </defs>
   <clipPath id="${uid}-c"><rect width="${W}" height="${H}"/></clipPath>
   <g id="${uid}" clip-path="url(#${uid}-c)">
-    <rect width="${W}" height="${H}" fill="${GLAZE}"/>
-    <rect width="${W}" height="${H}" filter="url(#${uid}-m)" opacity=".45"/>
-    <path d="${cr.d}" fill="none" stroke="#8ea89f" stroke-width=".9" opacity=".6"/>
-    <path d="${cr.fine}" fill="none" stroke="#8ea89f" stroke-width=".6" opacity=".45"/>
+    <rect width="${W}" height="${H}" fill="${PAPIER}" filter="url(#${uid}-papier)"/>
+    <rect width="${W}" height="${H}" fill="url(#${uid}-rand)"/>
+    <g filter="url(#${uid}-blei)">
     ${titleSvg}
     <g class="shape">${shape}</g>
     ${interactive ? `<rect x="${(axis - half - 8).toFixed(1)}" y="${(top - 6).toFixed(1)}" width="${(2 * half + 16).toFixed(1)}" height="${(cb * Hd + 12).toFixed(1)}" class="hit add" data-bp-add data-top="${top.toFixed(2)}" data-hd="${(cb * Hd).toFixed(2)}"/>` : ''}
     ${height}
     ${labels}
     ${infoSvg}
+    </g>
   </g>
 </svg>`;
 }

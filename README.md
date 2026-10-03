@@ -18,17 +18,11 @@ Eine Handy-App für Töpferinnen und Töpfer, die eigene Stücke töpfern und ei
 - Die Neigung des Handys und die Brennweite werden mit dem Foto gespeichert; damit rechnet die Erkennung die Perspektive genau heraus (bei Galeriefotos wird die Brennweite aus den EXIF-Daten gelesen).
 - **Erkennung**: Zuerst wird die **Mittelachse** gesucht – dort, wo viele Kanten spiegelgleich links und rechts liegen und das Stück auch innen spiegelgleich aussieht. Dann wird der Umriss **für beide Seiten gemeinsam** verfolgt: Ein Drehteil ist symmetrisch, Dinge im Hintergrund (Bilder, Regalkanten, Nachbargefäße) fast nie dazu. Die besser belichtete Seite (**Leitseite**) trägt den Umriss auch dort, wo die andere im Schatten liegt. Farbmodelle für Stück und Hintergrund vertragen Schatten und Glanzlichter. Was im Schatten, in Spiegelungen oder hinter Farbwechseln (z. B. zweifarbig getaucht, unglasierter Fuß) verloren geht, ergänzt die App aus ihrem **Formwissen** – gelernt aus einer Datenbank mit 3200 Bechern, Tassen, Schüsseln, Schalen und Vasen.
 - Henkel werden erkannt (auch über das Henkelloch) und vermessen: Höhe, wie weit er absteht, Ansatzhöhen
-- **Zeichnung leicht von oben**, damit Öffnung und Boden als Ellipsen zu sehen sind – auch wenn frontal fotografiert wurde. Stil einer Seladon-Glasur mit Craquelé; markante Stellen: **Öffnung, Hals/Taille, Bauch/Schulter, Rillen, Absatz/Fußansatz, Boden, Höhe**
+- **Zeichnung leicht von oben**, damit Öffnung und Boden als Ellipsen zu sehen sind – auch wenn frontal fotografiert wurde. Gezeichnet mit Bleistift in Handschrift auf off-white Aquarellpapier; markante Stellen (nur wo sich die Form wirklich ändert): **Öffnung, Schulter, Bauch (größter Durchmesser), Taille (Einziehung), Fuß bzw. Fußring, Höhe**
 - Fehlt eine Stelle, **auf die Form tippen** und eine eigene Stelle hinzufügen; Stellen lassen sich umbenennen oder ausblenden
 - **Maß antippen** → Wert eintragen. Schon ein Maß reicht: alle anderen Maße und die Höhe der Stellen werden aus dem Foto **geschätzt (≈)**
 - Auf der Werkstückseite zeigt ein kleines Foto mit eingezeichnetem Umriss, **wie die App das Stück erkannt hat** – bei Unsicherheit mit dem Hinweis „Bitte prüfen“
 - „Umriss anpassen“: Rahmen, Empfindlichkeit, Art des Stücks, anderes oder neues Foto; **auf das Stück tippen**, wenn die App ein Nachbarobjekt erwischt hat; mit **Hinzufügen / Entfernen** den Umriss mit dem Finger korrigieren
-- **„Umriss verfeinern“** – genau nachsteuern im Vollbild:
-  - mit **zwei Fingern zoomen** und verschieben
-  - **Mittelachse** verschieben (an den runden Enden neigen)
-  - gelbe **Regler** vom Bildrand an **Oberkante, Unterkante** und die **äußersten Punkte links und rechts** (breiteste Stelle, ohne Henkel) schieben
-  - **Pinsel** zum Hinzufügen, **Radierer** zum Wegnehmen
-  - nach jeder Änderung wird der Umriss **automatisch neu gezeichnet**; die Vorgaben bleiben gespeichert
 - „Groß anzeigen“ für die Drehscheibe – der Bildschirm bleibt dabei an
 
 ### 2. Glasieren – Vorher-Nachher-Protokoll
@@ -82,7 +76,7 @@ npx http-server -p 8080
 | `js/db.js` | Speicherung auf dem Gerät (IndexedDB) |
 | `js/image.js` | Fotos verkleinern, Brennweite aus EXIF |
 | `js/kamera.js` | Geführte Aufnahme: Maske, Wasserwaage, Live-Hinweise |
-| `js/verfeinern.js` | „Umriss verfeinern“: Vollbild mit Zoom, Mittelachse, Reglern, Pinsel und Radierer |
+| `js/kontur.js` | Umriss begradigen: gerade Wände, ruhige Bögen, scharfe Kanten |
 | `js/erkennung.js` | Formerkennung: Stück vom Hintergrund trennen, Kontur je Seite, Leitseite, Perspektive, Henkel |
 | `js/formprior.js` | Formwissen: Kontur an die gelernten Formfamilien anpassen, verdeckte Stellen vorhersagen |
 | `js/formen-modell.js` | Gelernte Formmodelle (automatisch erzeugt) |
@@ -99,7 +93,6 @@ node tools/test/auswerten.mjs 96 --bericht   # Erkennung an gerenderten Testfoto
 node tools/test/echt.mjs foto.png        # echtes Foto erkennen und Ergebnis einzeichnen
 node tools/test/blaupausen.mjs 6         # Testfotos und Blaupausen nebeneinander ansehen
 node tools/test/app-test.mjs             # Ende-zu-Ende im Browser mit simulierter Kamera
-node tools/test/verfeinern-test.mjs      # „Umriss verfeinern“: Regler, Zoom, Pinsel, Radierer (Browser)
 ```
 
 - `tools/formen/typologie.mjs` – Formfamilien gedrehter Gefäße (Proportionen, Fuß, Bauch, Taille, Schulter, Hals, Lippe)

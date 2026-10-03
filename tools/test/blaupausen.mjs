@@ -9,7 +9,8 @@ import { findPoints, renderBlueprint } from '../../js/blueprint.js';
 
 const anzahl = Number(process.argv[2]) || 6, start = Number(process.argv[3]) || 0;
 const ordner = new URL('./ausgabe/szenen/', import.meta.url).pathname;
-let html = '<!doctype html><meta charset="utf-8"><body style="margin:0;background:#eee;font-family:sans-serif"><div style="display:flex;flex-wrap:wrap;gap:8px;padding:8px">';
+const schrift = new URL('../../fonts/patrick-hand.woff2', import.meta.url).href;
+let html = `<!doctype html><meta charset="utf-8"><style>@font-face{font-family:"Bleistift Hand";src:url("${schrift}")}</style>` + '<body style="margin:0;background:#eee;font-family:sans-serif"><div style="display:flex;flex-wrap:wrap;gap:8px;padding:8px">';
 for (let i = start; i < start + anzahl; i++) {
   const seed = 1000 + i * 37;
   if (!existsSync(`${ordner}${seed}.png`)) { console.log('fehlt', seed, '– zuerst auswerten.mjs ausführen'); continue; }

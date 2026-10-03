@@ -17,91 +17,112 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 // Markante Stellen
 // ---------------------------------------------------------------------------
 
-export function findPoints(profile) {
+// Begriffe am Gefäß (wie am menschlichen Körper, von oben nach unten):
+//   Öffnung  – oberer Rand (Mündung)
+//   Schulter – oberer Teil des Körpers, wo die Wand vom Bauch zur engeren Öffnung
+//              (oder Taille) hin einbiegt; Stelle der stärksten Biegung dort
+//   Bauch    – größter Durchmesser, nur wenn die Wand darüber und darunter wieder enger wird
+//   Taille   – Einziehung: engste Stelle zwischen zwei weiteren Teilen
+//   Fuß      – Standfläche unten; Fußring, wenn sie durch eine Stufe/Kante abgesetzt ist
+// Eine Stelle wird nur markiert, wenn sich die Form dort wirklich ändert – eine gerade
+// oder gleichmäßig konische Wand hat weder Bauch noch Taille.
+export function findPoints(roh) {
+  const profile = begradigen(roh);
   const n = profile.length;
   const rmax = Math.max(...profile);
-  const minProm = 0.04 * rmax;
-  const lo = Math.round(n * 0.08);
-  const hi = Math.round(n * 0.92);
-  const win = 3;
-  const maxes = [];
-  const mins = [];
-
-  for (let i = lo; i <= hi; i++) {
-    const v = profile[i];
-    let isMax = true, isMin = true;
-    for (let j = i - win; j <= i + win; j++) {
-      if (j === i || j < 0 || j >= n) continue;
-      if (profile[j] > v) isMax = false;
-      if (profile[j] < v) isMin = false;
-    }
-    const before = profile.slice(0, i + 1);
-    const after = profile.slice(i);
-    if (isMax) {
-      const prom = v - Math.max(Math.min(...before), Math.min(...after));
-      if (prom > minProm) maxes.push({ i, prom });
-    }
-    if (isMin) {
-      const prom = Math.min(Math.max(...before), Math.max(...after)) - v;
-      if (prom > minProm) mins.push({ i, prom });
-    }
-  }
-
-  // Höchstens zwei Stellen je Art; zwei Bäuche brauchen eine echte Einschnürung dazwischen
-  const pick = (list, isMax, max) => {
-    const out = [];
-    for (const c of list.sort((a, b) => b.prom - a.prom)) {
-      if (out.length >= max) break;
-      const ok = out.every(o => {
-        const between = profile.slice(Math.min(o.i, c.i), Math.max(o.i, c.i) + 1);
-        return isMax
-          ? Math.min(...between) < Math.min(profile[o.i], profile[c.i]) - minProm
-          : Math.max(...between) > Math.max(profile[o.i], profile[c.i]) + minProm;
-      });
-      if (ok) out.push(c);
-    }
-    return out;
-  };
+  // spürbare Formänderung: 5 % des größten Radius, mindestens 1,5 % der Höhe
+  const minProm = Math.max(0.05 * rmax, 0.015);
+  const lo = Math.round(n * 0.06), hi = Math.round(n * 0.94);
   const t = i => Math.round((i / (n - 1)) * 1000) / 1000;
   const m = i => Math.round(2 * profile[i] * 10000) / 10000;
+  const maxBis = (a, b) => { let v = -Infinity; for (let i = a; i <= b; i++) v = Math.max(v, profile[i]); return v; };
+  const minBis = (a, b) => { let v = Infinity; for (let i = a; i <= b; i++) v = Math.min(v, profile[i]); return v; };
+
+  // Bauch: weiteste Stelle innen, oberhalb und unterhalb deutlich enger
+  let bauch = -1;
+  for (let i = lo; i <= hi; i++) {
+    const v = profile[i];
+    if (bauch >= 0 && v <= profile[bauch]) continue;
+    if (v - minBis(0, i) > minProm && v - minBis(i, n - 1) > minProm) bauch = i;
+  }
+  if (bauch >= 0 && maxBis(0, n - 1) > profile[bauch] + 1e-6) {
+    // es gibt eine weitere Stelle (z. B. ausgestellte Öffnung): Bauch nur, wenn er dort ein echtes Maximum ist
+    const umg = Math.round(n * 0.04);
+    if (profile[bauch] < maxBis(Math.max(0, bauch - umg), Math.min(n - 1, bauch + umg)) - 1e-6) bauch = -1;
+  }
+
+  // Taille: engste Stelle mit deutlich weiteren Teilen darüber und darunter
+  const taillen = [];
+  for (let i = lo; i <= hi; i++) {
+    const v = profile[i];
+    const umg = Math.round(n * 0.03);
+    if (v > minBis(Math.max(0, i - umg), Math.min(n - 1, i + umg)) + 1e-9) continue;
+    const prom = Math.min(maxBis(0, i), maxBis(i, n - 1)) - v;
+    if (prom > minProm && !taillen.some(c => Math.abs(c.i - i) <= umg)) taillen.push({ i, prom });
+  }
+  // höchstens eine Taille oberhalb und eine unterhalb des Bauchs
+  const wahl = list => list.sort((x, y) => y.prom - x.prom)[0];
+  const tl = bauch >= 0
+    ? [wahl(taillen.filter(c => c.i < bauch)), wahl(taillen.filter(c => c.i > bauch))].filter(Boolean)
+    : [wahl(taillen)].filter(Boolean);
+
+  // Fußring: unten ein abgesetztes Stück mit (fast) senkrechter Wand, darüber eine Stufe bzw.
+  // ein Knick, an dem die Wand deutlich einspringt. Ein runder Boden ist kein Fußring.
+  const dt = 1 / (n - 1);
+  const k = Math.max(3, Math.round(n * 0.03));
+  let ring = false;
+  for (let i = Math.round(n * 0.7); i <= n - 1 - k && !ring; i++) {
+    let sx = 0, sy = 0, sxx = 0, sxy = 0, c = 0;
+    for (let j = i; j < n; j++) { const x = j * dt, y = profile[j]; sx += x; sy += y; sxx += x * x; sxy += x * y; c++; }
+    const sB = (c * sxy - sx * sy) / (c * sxx - sx * sx || 1);
+    let rest = 0;
+    for (let j = i; j < n; j++) rest = Math.max(rest, Math.abs(profile[j] - (sy / c + sB * (j * dt - sx / c))));
+    const sprung = Math.abs(profile[i - k] - profile[i] - -sB * k * dt);
+    if (Math.abs(sB) < 0.5 && rest < 0.006 && sprung > Math.max(0.06 * rmax, 0.015)) ring = true;
+  }
+
+  // Schulter: über dem Bauch biegt die Wand zur engeren Öffnung/Taille ein; Stelle der
+  // stärksten Biegung, deutlich vom Bauch abgesetzt
+  let schulter = -1;
+  if (bauch >= 0) {
+    const oben = tl.find(c => c.i < bauch)?.i ?? 0;
+    if (profile[bauch] - profile[oben] > 2 * minProm) {
+      const d = Math.max(2, Math.round(n * 0.03));
+      let best = 0;
+      for (let i = oben + d; i <= bauch - d; i++) {
+        const kr = profile[i - d] - 2 * profile[i] + profile[i + d]; // < 0: Wand biegt nach innen
+        if (-kr > best) { best = -kr; schulter = i; }
+      }
+      const abstand = Math.round(n * 0.07);
+      if (schulter >= 0 && (bauch - schulter < abstand || schulter - oben < abstand || best < 0.004
+        // sichtbar enger als der Bauch und sichtbar weiter als Öffnung/Taille darüber
+        || profile[bauch] - profile[schulter] < 0.5 * minProm || profile[schulter] - profile[oben] < minProm)) schulter = -1;
+    }
+  }
 
   const points = [
     { key: 'hoehe', label: 'Höhe', t: null, m: 1 },
     { key: 'rand', label: 'Ø Öffnung', t: 0, m: m(0) },
   ];
-  const bulges = pick(maxes, true, 2);
-  bulges.forEach((c, idx) => {
-    if (idx === 0) points.push({ key: 'bauch', label: 'Ø Bauch', t: t(c.i), m: m(c.i) });
-    else points.push({ key: 'bauch2', label: c.i < bulges[0].i ? 'Ø Schulter' : 'Ø Wölbung', t: t(c.i), m: m(c.i) });
+  if (schulter >= 0) points.push({ key: 'schulter', label: 'Ø Schulter', t: t(schulter), m: m(schulter) });
+  if (bauch >= 0) points.push({ key: 'bauch', label: 'Ø Bauch', t: t(bauch), m: m(bauch) });
+  tl.sort((x, y) => x.i - y.i).forEach((c, idx) => {
+    points.push({ key: idx ? 'taille2' : 'taille', label: 'Ø Taille', t: t(c.i), m: m(c.i) });
   });
-  // Engstellen: zwischen zwei Wölbungen ist es eine Rille, sonst Hals bzw. Taille
-  let rillen = 0, engen = 0;
-  pick(mins, false, 3).sort((a, b) => a.i - b.i).forEach(c => {
-    const zwischen = bulges.some(b => b.i < c.i) && bulges.some(b => b.i > c.i);
-    if (zwischen) {
-      rillen++;
-      points.push({ key: `rille${rillen}`, label: 'Ø Rille', t: t(c.i), m: m(c.i) });
-    } else {
-      engen++;
-      if (engen === 1) points.push({ key: 'hals', label: c.i < n / 2 ? 'Ø Hals' : 'Ø Taille', t: t(c.i), m: m(c.i) });
-      else points.push({ key: 'hals2', label: 'Ø Einschnürung', t: t(c.i), m: m(c.i) });
-    }
-  });
+  points.push({ key: 'fuss', label: ring ? 'Ø Fußring' : 'Ø Fuß', t: 1, m: m(n - 1) });
+  return points.sort((a, b) => (a.t ?? -1) - (b.t ?? -1));
+}
 
-  // Absatz: kurzer, steiler Sprung im Profil (z. B. Übergang von Schale zu Fußring)
-  const k = Math.max(2, Math.round(n * 0.025));
-  let step = null;
-  for (let i = Math.round(n * 0.1); i < n - k; i++) {
-    const drop = Math.abs(profile[i - k] - profile[i + k]);
-    if (drop > 0.12 * rmax && (!step || drop > step.drop)) step = { i, drop };
-  }
-  if (step && !points.some(p => p.t != null && Math.abs(p.t - t(step.i)) < 0.08) && t(step.i) < 0.95) {
-    const wide = Math.max(profile[step.i - k], profile[step.i + k]);
-    points.push({ key: 'absatz', label: step.i > n * 0.6 ? 'Ø Fußansatz' : 'Ø Absatz', t: t(step.i), m: Math.round(2 * wide * 10000) / 10000 });
-  }
+// Frühere Schlüssel und automatische Namen (vor der Umstellung der Begriffe)
+const ALTE_SCHLUESSEL = { hals: 'taille', hals2: 'taille2' };
+const ALTE_NAMEN = new Set(['Ø Öffnung', 'Ø Hals', 'Ø Taille', 'Ø Einschnürung', 'Ø Bauch', 'Ø Schulter', 'Ø Wölbung', 'Ø Rille', 'Ø Absatz', 'Ø Fußansatz', 'Ø Boden', 'Ø Fuß', 'Ø Fußring']);
+export const istAutoName = name => ALTE_NAMEN.has(name);
 
-  points.push({ key: 'fuss', label: 'Ø Boden', t: 1, m: m(n - 1) });
-  return points;
+// Eingetragene Werte unter früheren Schlüsseln übernehmen
+export function alteWerte(obj = {}) {
+  const out = { ...obj };
+  for (const [alt, neu] of Object.entries(ALTE_SCHLUESSEL)) if (out[neu] == null && out[alt] != null) out[neu] = out[alt];
+  return out;
 }
 
 // Automatisch gefundene Stellen (ohne ausgeblendete) plus eigene Stellen, mit eigenen Namen
@@ -109,7 +130,10 @@ export function effectivePoints(bp) {
   const hidden = bp.hidden || [];
   const labels = bp.labels || {};
   const rAt = profileAt(bp.profile);
-  const pts = bp.points.filter(p => !hidden.includes(p.key)).map(p => ({ ...p, label: labels[p.key] || p.label }));
+  // Stellen immer aus dem (begradigten) Profil neu bestimmen, damit auch ältere Blaupausen
+  // die heutigen Begriffe und Regeln bekommen; frühere automatische Namen zählen nicht als eigene
+  const name = (key, auto) => (labels[key] && !istAutoName(labels[key]) ? labels[key] : auto);
+  const pts = findPoints(bp.profile).filter(p => !hidden.includes(p.key)).map(p => ({ ...p, label: name(p.key, p.label) }));
   for (const c of bp.custom || []) {
     pts.push({ key: c.key, label: labels[c.key] || 'Ø Stelle', t: c.t, m: Math.round(2 * rAt(c.t) * 10000) / 10000, custom: true });
   }

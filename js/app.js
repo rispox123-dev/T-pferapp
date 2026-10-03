@@ -1,6 +1,6 @@
 import * as db from './db.js';
 import { processImage, blobToDataUrl, dataUrlToBlob, brennweiteAusExif } from './image.js';
-import { findPoints, estimate, effectivePoints, renderBlueprint, hashSeed } from './blueprint.js';
+import { findPoints, estimate, effectivePoints, renderBlueprint, hashSeed, alteWerte, istAutoName } from './blueprint.js';
 import { analyze, loadForAnalysis, cropFromGuide, DEFAULT_SENS } from './erkennung.js';
 import { gefuehrteAufnahme, kameraVerfuegbar, GRUPPEN } from './kamera.js';
 
@@ -604,9 +604,9 @@ async function viewPieceForm(id, params) {
 const BP_FIELDS = { hoehe: 'hoehe', rand: 'dOben', bauch: 'dMax', fuss: 'dBoden' };
 
 function bpData(p) {
-  const values = { ...(p.blueprint?.values || {}) };
+  const values = alteWerte(p.blueprint?.values);
   for (const [key, f] of Object.entries(BP_FIELDS)) values[key] = isNum(p.nass?.[f]) ? Number(p.nass[f]) : null;
-  return { values, pos: { ...(p.blueprint?.pos || {}) } };
+  return { values, pos: alteWerte(p.blueprint?.pos) };
 }
 
 function bpInfo(p) {
@@ -761,7 +761,8 @@ function mountBlueprint(container, p, onSaved) {
     if (BP_FIELDS[key]) p.nass = { ...(p.nass || {}), [BP_FIELDS[key]]: res.value };
     else bp().values = { ...bp().values, [key]: res.value };
     if (interior) bp().pos = { ...bp().pos, [key]: res.pos };
-    if (res.label !== undefined) bp().labels = { ...(bp().labels || {}), [key]: res.label || undefined };
+    // nur einen wirklich eigenen Namen merken; der automatische folgt sonst den Begriffen der App
+    if (res.label !== undefined) bp().labels = { ...(bp().labels || {}), [key]: res.label && (pt.custom || !istAutoName(res.label)) ? res.label : undefined };
     return save();
   };
 

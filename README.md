@@ -17,12 +17,15 @@ Eine Handy-App für Töpferinnen und Töpfer, die eigene Stücke töpfern und ei
 - **Geführte Aufnahme** („Foto für Blaupause“): Eine Maske zeigt den Umriss einer typischen Form (Becher/Tasse, Schüssel, Vase), die Mittellinie, die Standlinie und die Augenhöhe. Eine **Wasserwaage** (Lagesensor) wird grün, wenn das Handy senkrecht und gerade ist. Hinweise wie „Näher heran“, „Standfläche auf die Standlinie“ oder „Mehr Licht“ führen zum besten Winkel: **frontal, Kamera auf halber Höhe, Henkel zur Seite**.
 - Die Neigung des Handys und die Brennweite werden mit dem Foto gespeichert; damit rechnet die Erkennung die Perspektive genau heraus (bei Galeriefotos wird die Brennweite aus den EXIF-Daten gelesen).
 - **Erkennung**: Zuerst wird die **Mittelachse** gesucht – dort, wo viele Kanten spiegelgleich links und rechts liegen und das Stück auch innen spiegelgleich aussieht. Dann wird der Umriss **für beide Seiten gemeinsam** verfolgt: Ein Drehteil ist symmetrisch, Dinge im Hintergrund (Bilder, Regalkanten, Nachbargefäße) fast nie dazu. Die besser belichtete Seite (**Leitseite**) trägt den Umriss auch dort, wo die andere im Schatten liegt. Farbmodelle für Stück und Hintergrund vertragen Schatten und Glanzlichter. Was im Schatten, in Spiegelungen oder hinter Farbwechseln (z. B. zweifarbig getaucht, unglasierter Fuß) verloren geht, ergänzt die App aus ihrem **Formwissen** – gelernt aus einer Datenbank mit 3200 Bechern, Tassen, Schüsseln, Schalen und Vasen.
-- Henkel werden erkannt (auch über das Henkelloch) und vermessen: Höhe, wie weit er absteht, Ansatzhöhen
+- Henkel werden erkannt und vermessen: Höhe, wie weit er absteht, Ansatzhöhen. Glanzlichter und Schattenseiten zerreißen den Henkel nicht mehr in Teilstücke; ragt er über den Rahmen der Aufnahme-Maske hinaus, erweitert die App den Ausschnitt selbst
+- Obere Ecken: Ist die Neigung vom Lagesensor oder die Brennweite nicht ganz genau, gerät ein Stück des Randbogens ins Profil und die Ecken würden rund. Biegt das Profil nur ganz oben und viel stärker als die Wand darunter ein, setzt die App die Wand bis zum Rand fort
 - **Zeichnung leicht von oben**, damit Öffnung und Boden als Ellipsen zu sehen sind – auch wenn frontal fotografiert wurde. Gezeichnet mit Bleistift in Handschrift auf off-white Aquarellpapier; markante Stellen (nur wo sich die Form wirklich ändert): **Öffnung, Schulter, Bauch (größter Durchmesser), Taille (Einziehung), Fuß bzw. Fußring, Höhe**
 - Fehlt eine Stelle, **auf die Form tippen** und eine eigene Stelle hinzufügen; Stellen lassen sich umbenennen oder ausblenden
 - **Maß antippen** → Wert eintragen. Schon ein Maß reicht: alle anderen Maße und die Höhe der Stellen werden aus dem Foto **geschätzt (≈)**
+- **Abgleich mit deinen Maßen**: Die Zeichnung wird so angepasst, dass jedes eingetragene Maß genau stimmt. Zwischen zwei eingetragenen Stellen bleibt der Verlauf erhalten; steigt oder fällt die Wand dort nur, wird sie genau auf die Maße gestreckt – sind beide gleich (z. B. Taille = Öffnung), wird sie gerade. Eine eingetragene Höhenlage („auf welcher Höhe“) verschiebt die Stelle. Henkel wandern mit. Die eingetragene Höhe legt den Maßstab fest
 - Auf der Werkstückseite zeigt ein kleines Foto mit eingezeichnetem Umriss, **wie die App das Stück erkannt hat** – bei Unsicherheit mit dem Hinweis „Bitte prüfen“
-- „Umriss anpassen“: Rahmen, Empfindlichkeit, Art des Stücks, anderes oder neues Foto; **auf das Stück tippen**, wenn die App ein Nachbarobjekt erwischt hat; mit **Hinzufügen / Entfernen** den Umriss mit dem Finger korrigieren
+- „Umriss anpassen“: Rahmen, Empfindlichkeit, Art des Stücks, anderes oder neues Foto; **auf das Stück tippen**, wenn die App ein Nachbarobjekt erwischt hat; mit **Henkel** den Henkel nachmalen (der Körper bleibt dabei unverändert), mit **Hinzufügen / Entfernen** den Körper korrigieren. Einseitig Hinzugefügtes zählt als Henkel, nicht als Körper
+- Zum Malen öffnet sich das Foto im **Vollbild**: mit **zwei Fingern zoomen** und verschieben (am Rechner mit dem Mausrad); der Pinsel wird beim Zoomen feiner
 - „Groß anzeigen“ für die Drehscheibe – der Bildschirm bleibt dabei an
 
 ### 2. Glasieren – Vorher-Nachher-Protokoll
@@ -92,7 +95,8 @@ npm run formen                           # Datenbank bauen, Modelle lernen → j
 node tools/test/auswerten.mjs 96 --bericht   # Erkennung an gerenderten Testfotos prüfen → tools/test/ERKENNUNG.md
 node tools/test/echt.mjs foto.png        # echtes Foto erkennen und Ergebnis einzeichnen
 node tools/test/blaupausen.mjs 6         # Testfotos und Blaupausen nebeneinander ansehen
-node tools/test/app-test.mjs             # Ende-zu-Ende im Browser mit simulierter Kamera
+node tools/test/henkel-ecken.mjs 40      # Henkel (wie viel erfasst) und obere Ecken an Bechern/Tassen, mit --unschaerfe
+node tools/test/app-test.mjs             # Ende-zu-Ende im Browser mit simulierter Kamera, Vollbild, Zoom, Henkel-Werkzeug
 ```
 
 - `tools/formen/typologie.mjs` – Formfamilien gedrehter Gefäße (Proportionen, Fuß, Bauch, Taille, Schulter, Hals, Lippe)

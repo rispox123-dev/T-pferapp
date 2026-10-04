@@ -627,7 +627,34 @@ dialog.sheet h2 { margin: 0 0 12px; font-size: 1.45rem; font-weight: 400; }
 .bp-head h2 { margin: 0; }
 .bp-full { margin: 0 -10px 12px; }
 .bp-editor { display: flex; justify-content: center; user-select: none; -webkit-user-select: none; }
+.bp-editor { position: relative; }
 .bp-editor canvas { display: block; max-width: 100%; border-radius: 3px; touch-action: none; background: rgba(61, 59, 56, .06); box-shadow: 0 2px 8px rgba(61, 59, 56, .25); }
+.bp-voll-btn {
+  position: absolute; right: 8px; bottom: 8px;
+  width: 42px; height: 42px; padding: 9px;
+  border: 0; border-radius: 50%;
+  background: rgba(0, 0, 0, .5); color: #fff; cursor: pointer;
+}
+.bp-voll-btn svg { display: block; width: 100%; height: 100%; }
+.bp-voll-fuss { display: none; }
+/* Umriss im Vollbild zeichnen: mit zwei Fingern zoomen */
+body.vollbild-offen { overflow: hidden; }
+.bp-werkzeug.vollbild {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; flex-direction: column;
+  padding: calc(8px + env(safe-area-inset-top)) 10px calc(8px + env(safe-area-inset-bottom));
+  background: #1d1c1a; color: #f2efe9;
+}
+.bp-werkzeug.vollbild .segmented { margin-bottom: 8px; }
+.bp-werkzeug.vollbild .segmented span, .bp-werkzeug.vollbild .btn:not(.danger) { color: #f2efe9; }
+.bp-werkzeug.vollbild .btn.danger { color: #ff9d8a; }
+.bp-werkzeug.vollbild .bp-editor { flex: 1; min-height: 0; overflow: hidden; align-items: center; }
+.bp-werkzeug.vollbild .bp-editor canvas { max-width: none; border-radius: 0; box-shadow: none; background: #111; }
+.bp-werkzeug.vollbild .bp-voll-btn { display: none; }
+.bp-werkzeug.vollbild #brush-tools { margin-top: 8px; }
+.bp-werkzeug.vollbild .range-field, .bp-werkzeug.vollbild .hint { color: #cfcac1; }
+.bp-werkzeug.vollbild #bp-status { margin: 6px 0 0 !important; font-size: .85rem; line-height: 1.3; }
+.bp-werkzeug.vollbild .bp-voll-fuss { display: flex; justify-content: flex-end; margin-top: 6px; }
 .bp-choice { display: flex; gap: 8px; overflow-x: auto; margin-bottom: 12px; }
 .bp-choice { padding: 4px 2px 8px; }
 .bp-choice button { flex: 0 0 64px; height: 80px; padding: 0; border: 0; border-radius: 3px; overflow: hidden; background: none; cursor: pointer; box-shadow: 0 1px 3px rgba(61, 59, 56, .22); opacity: .65; }

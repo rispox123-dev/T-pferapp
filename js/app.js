@@ -1,6 +1,6 @@
 import * as db from './db.js';
 import { processImage, blobToDataUrl, dataUrlToBlob, brennweiteAusExif } from './image.js';
-import { findPoints, estimate, effectivePoints, renderBlueprint, hashSeed, alteWerte, istAutoName } from './blueprint.js';
+import { findPoints, abgleich, renderBlueprint, hashSeed, alteWerte, istAutoName } from './blueprint.js';
 import { analyze, loadForAnalysis, cropFromGuide, DEFAULT_SENS } from './erkennung.js';
 import { gefuehrteAufnahme, kameraVerfuegbar, GRUPPEN } from './kamera.js';
 
@@ -99,6 +99,7 @@ function setHeader({ title, back = null, actions = '' }) {
 
 const ICON_PLUS = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>';
 const ICON_GUIDE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M9.5 7.5h5M10 7.5c0 2-1.8 3-1.8 6a3.8 3.8 0 0 0 7.6 0c0-3-1.8-4-1.8-6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="2.5 2"/><path d="M12 5v14" stroke="currentColor" stroke-width="1" stroke-dasharray="1 2"/></svg>';
+const ICON_VOLLBILD = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_CAMERA = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-2.5h6L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>';
 
 // ---------------------------------------------------------------------------
@@ -741,10 +742,11 @@ function mountBlueprint(container, p, onSaved) {
   const bp = () => p.blueprint;
 
   const edit = async key => {
-    const pt = effectivePoints(bp()).find(x => x.key === key);
-    if (!pt) return;
     const { values, pos } = bpData(p);
-    const est = estimate(bp(), values, pos);
+    // Schätzungen wie in der Zeichnung (an die eingetragenen Maße angeglichen)
+    const est = abgleich(bp(), values, pos);
+    const pt = est.points.find(x => x.key === key);
+    if (!pt) return;
     const interior = pt.t > 0 && pt.t < 1;
     const res = await measureDialog({
       title: pt.label, isHeight: key === 'hoehe', value: values[key], est: est.value(pt),
@@ -769,15 +771,15 @@ function mountBlueprint(container, p, onSaved) {
   const add = async t => {
     const { values, pos } = bpData(p);
     const probe = { key: '_neu', t, m: 0 };
-    const est = estimate(bp(), values, pos);
-    const r = p.blueprint.profile[Math.round(t * (p.blueprint.profile.length - 1))];
-    probe.m = 2 * r;
+    const est = abgleich(bp(), values, pos);
+    probe.m = 2 * est.profile[Math.round(t * (est.profile.length - 1))];
     const res = await measureDialog({
       title: 'Neue Stelle', value: null, est: est.value(probe), showPos: true, pos: null, posEst: est.pos(probe), label: 'Ø Stelle',
     });
     if (!res || res.action !== 'ok') return;
     const key = `eigene-${Date.now().toString(36)}`;
-    bp().custom = [...(bp().custom || []), { key, t: Math.round(t * 1000) / 1000 }];
+    // Lage wie im Foto merken (die Zeichnung kann an die Maße angeglichen sein)
+    bp().custom = [...(bp().custom || []), { key, t: Math.round(est.tFoto(t) * 1000) / 1000 }];
     bp().labels = { ...(bp().labels || {}), [key]: res.label || 'Ø Stelle' };
     bp().values = { ...bp().values, [key]: res.value };
     bp().pos = { ...bp().pos, [key]: res.pos };
@@ -856,37 +858,43 @@ async function viewBlueprintEditor(id) {
     gruppe: gleich ? prev.gruppe || null : null,
     punkt: gleich ? prev.punkt || null : null,
     mode: 'rahmen',
-    brushSize: 5,
+    brushSize: 4,
+    voll: false,
     src: null,
     photo: null,
     result: null,
   };
 
   $app.innerHTML = `
-    <div class="info-box"><p>Orange ist der erkannte Umriss, die gestrichelte Linie die Mittellinie. Die besser belichtete Seite (<strong>Leitseite</strong>) gibt die Form vor; blau markierte Stellen hat die App aus ihrem Formwissen ergänzt. Hat sie ein anderes Objekt erwischt, <strong>tippe auf dein Stück</strong>. Fehlt etwas (z. B. ein Henkel), male es mit <strong>Hinzufügen</strong> dazu; Schatten nimmst du mit <strong>Entfernen</strong> weg.</p></div>
+    <div class="info-box"><p>Orange ist der erkannte Umriss, rot der Henkel, die gestrichelte Linie die Mittellinie. Die besser belichtete Seite (<strong>Leitseite</strong>) gibt die Form vor; blau markierte Stellen hat die App aus ihrem Formwissen ergänzt. Hat sie ein anderes Objekt erwischt, <strong>tippe auf dein Stück</strong>. Fehlt der Henkel oder ein Teil davon, male ihn mit <strong>Henkel</strong> nach – der Körper bleibt dabei, wie er ist. Fehlt am Körper etwas, nimm <strong>Hinzufügen</strong>; Schatten nimmst du mit <strong>Entfernen</strong> weg. Zum Malen öffnet sich das Foto im Vollbild: <strong>mit zwei Fingern zoomen</strong> und verschieben.</p></div>
     <div class="bp-choice">${p.photos.map(ph => `<button type="button" data-photo-id="${ph}" class="${ph === st.photoId ? 'active' : ''}" aria-label="Dieses Foto verwenden">${thumb(ph)}</button>`).join('')}
       ${kameraVerfuegbar() ? `<button type="button" class="bp-neu" id="bp-foto" aria-label="Neues Foto für die Blaupause aufnehmen">${ICON_GUIDE}<span>Neues Foto</span></button>` : ''}</div>
     <label class="field"><span>Art des Stücks</span><select id="bp-gruppe">
       <option value="">Automatisch erkennen</option>
       ${GRUPPEN.map(g => `<option value="${g.key}" ${st.gruppe === g.key ? 'selected' : ''}>${esc(g.label)}</option>`).join('')}
     </select></label>
-    <div class="segmented" id="bp-mode" role="radiogroup" aria-label="Werkzeug">
-      <label><input type="radio" name="bpmode" value="rahmen" checked><span class="none">Rahmen</span></label>
-      <label><input type="radio" name="bpmode" value="pinsel"><span class="none">Hinzufügen</span></label>
-      <label><input type="radio" name="bpmode" value="radierer"><span class="none">Entfernen</span></label>
-    </div>
-    <div class="bp-editor"><canvas></canvas></div>
-    <div id="brush-tools" hidden>
-      <label class="range-field"><span>Pinselgröße</span>
-        <input type="range" min="2" max="12" value="${st.brushSize}" id="brush-size" class="compare-range"></label>
-      <div class="btn-row" style="margin-top:6px">
-        <button type="button" class="btn small" id="brush-undo">Rückgängig</button>
-        <button type="button" class="btn small danger" id="brush-clear">Markierung löschen</button>
+    <div class="bp-werkzeug" id="bp-werkzeug">
+      <div class="segmented" id="bp-mode" role="radiogroup" aria-label="Werkzeug">
+        <label><input type="radio" name="bpmode" value="rahmen" checked><span class="none">Rahmen</span></label>
+        <label><input type="radio" name="bpmode" value="henkel"><span class="none">Henkel</span></label>
+        <label><input type="radio" name="bpmode" value="pinsel"><span class="none">Hinzufügen</span></label>
+        <label><input type="radio" name="bpmode" value="radierer"><span class="none">Entfernen</span></label>
       </div>
+      <div class="bp-editor"><canvas></canvas>
+        <button type="button" class="bp-voll-btn" id="bp-voll" aria-label="Im Vollbild zeichnen">${ICON_VOLLBILD}</button></div>
+      <div id="brush-tools" hidden>
+        <label class="range-field"><span>Pinselgröße</span>
+          <input type="range" min="1" max="10" value="${st.brushSize}" id="brush-size" class="compare-range"></label>
+        <div class="btn-row" style="margin-top:6px">
+          <button type="button" class="btn small" id="brush-undo">Rückgängig</button>
+          <button type="button" class="btn small danger" id="brush-clear">Markierung löschen</button>
+        </div>
+      </div>
+      <p class="hint" id="bp-status" style="margin:0 0 4px"></p>
+      <div class="bp-voll-fuss"><button type="button" class="btn primary" id="bp-fertig">Fertig</button></div>
     </div>
     <label class="range-field"><span>Empfindlichkeit</span>
       <input type="range" min="0" max="100" value="${st.sens}" id="sens" class="compare-range"></label>
-    <p class="hint" id="bp-status" style="margin:0 0 4px"></p>
     <div class="btn-row">
       <button type="button" class="btn" id="cancel">Abbrechen</button>
       <button type="button" class="btn primary" id="apply" disabled>Übernehmen</button>
@@ -901,30 +909,55 @@ async function viewBlueprintEditor(id) {
   const statusEl = $app.querySelector('#bp-status');
   const previewEl = $app.querySelector('#bp-preview');
   const applyBtn = $app.querySelector('#apply');
-  let box = { w: 0, h: 0 };
+  const werkzeug = $app.querySelector('#bp-werkzeug');
+  const editorEl = $app.querySelector('.bp-editor');
+  // Leinwand cw × ch; darin das Foto in Grundgröße box, gezoomt um view.S und verschoben um view.ox/oy
+  let box = { w: 0, h: 0 }, cw = 0, ch = 0;
+  const view = { S: 1, ox: 0, oy: 0 };
   const brushLayer = document.createElement('canvas');
   const brushCtx = brushLayer.getContext('2d');
+  const dpr = () => window.devicePixelRatio || 1;
+
+  // Foto nicht aus dem Bild schieben; kleiner als die Leinwand: mittig
+  const begrenzen = () => {
+    view.S = Math.max(1, Math.min(10, view.S));
+    const w = box.w * view.S, h = box.h * view.S;
+    view.ox = w <= cw ? (cw - w) / 2 : Math.min(0, Math.max(cw - w, view.ox));
+    view.oy = h <= ch ? (ch - h) / 2 : Math.min(0, Math.max(ch - h, view.oy));
+  };
 
   const layout = () => {
     const img = st.src.img;
-    const maxW = canvas.parentElement.clientWidth;
-    const maxH = Math.min(window.innerHeight * 0.55, 560);
-    const ratio = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight);
-    box = { w: Math.round(img.naturalWidth * ratio), h: Math.round(img.naturalHeight * ratio) };
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = box.w * dpr;
-    canvas.height = box.h * dpr;
-    canvas.style.width = `${box.w}px`;
-    canvas.style.height = `${box.h}px`;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    brushLayer.width = box.w;
-    brushLayer.height = box.h;
+    if (st.voll) {
+      cw = editorEl.clientWidth;
+      ch = editorEl.clientHeight;
+    } else {
+      const maxW = editorEl.clientWidth;
+      const maxH = Math.min(window.innerHeight * 0.55, 560);
+      const ratio = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight);
+      cw = Math.round(img.naturalWidth * ratio);
+      ch = Math.round(img.naturalHeight * ratio);
+    }
+    const b = Math.min(cw / img.naturalWidth, ch / img.naturalHeight);
+    box = { w: img.naturalWidth * b, h: img.naturalHeight * b };
+    canvas.width = Math.round(cw * dpr());
+    canvas.height = Math.round(ch * dpr());
+    canvas.style.width = `${cw}px`;
+    canvas.style.height = `${ch}px`;
+    brushLayer.width = canvas.width;
+    brushLayer.height = canvas.height;
+    view.S = 1;
+    begrenzen();
   };
 
   const draw = () => {
     const { w, h } = box;
     const c = st.crop;
-    ctx.clearRect(0, 0, w, h);
+    const d = dpr(), S = view.S, L = 1 / S; // Linien bleiben beim Zoomen gleich dick
+    const ansicht = () => ctx.setTransform(d * S, 0, 0, d * S, d * view.ox, d * view.oy);
+    ctx.setTransform(d, 0, 0, d, 0, 0);
+    ctx.clearRect(0, 0, cw, ch);
+    ansicht();
     ctx.drawImage(st.src.img, 0, 0, w, h);
     ctx.fillStyle = 'rgba(0,0,0,.5)';
     ctx.fillRect(0, 0, w, c.y0 * h);
@@ -932,7 +965,7 @@ async function viewBlueprintEditor(id) {
     ctx.fillRect(0, c.y0 * h, c.x0 * w, (c.y1 - c.y0) * h);
     ctx.fillRect(c.x1 * w, c.y0 * h, w - c.x1 * w, (c.y1 - c.y0) * h);
     ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 2 * L;
     ctx.strokeRect(c.x0 * w, c.y0 * h, (c.x1 - c.x0) * w, (c.y1 - c.y0) * h);
     const o = st.result?.outline;
     if (o) {
@@ -945,16 +978,16 @@ async function viewBlueprintEditor(id) {
       ctx.lineJoin = 'round';
       // gemessene Kanten der Leitseite (dünn, weiß)
       ctx.strokeStyle = 'rgba(255,255,255,.75)';
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 1.5 * L;
       linie(o.leit === 'links' ? o.links : o.rechts, false);
       ctx.strokeStyle = '#ff7a3d';
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 3 * L;
       linie(o.koerper, true);
       ctx.strokeStyle = '#ff3d6e';
       for (const hk of o.henkel) linie(hk, true);
       // aus dem Formwissen ergänzt
       ctx.strokeStyle = '#3aa0ff';
-      ctx.lineWidth = 5;
+      ctx.lineWidth = 5 * L;
       ctx.lineCap = 'round';
       for (const [ya, yb] of o.ergaenzt) {
         for (const pts of [o.koerper]) {
@@ -965,48 +998,51 @@ async function viewBlueprintEditor(id) {
         }
       }
       ctx.lineCap = 'butt';
-      ctx.setLineDash([6, 6]);
-      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6 * L, 6 * L]);
+      ctx.lineWidth = 1.5 * L;
       ctx.strokeStyle = '#fff';
       linie(o.achse, false);
       ctx.setLineDash([]);
     }
     if (st.punkt) {
+      const px = st.punkt.x * w, py = st.punkt.y * h;
       ctx.strokeStyle = '#fff';
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 2 * L;
       ctx.beginPath();
-      ctx.arc(st.punkt.x * w, st.punkt.y * h, 9, 0, Math.PI * 2);
-      ctx.moveTo(st.punkt.x * w - 14, st.punkt.y * h); ctx.lineTo(st.punkt.x * w + 14, st.punkt.y * h);
-      ctx.moveTo(st.punkt.x * w, st.punkt.y * h - 14); ctx.lineTo(st.punkt.x * w, st.punkt.y * h + 14);
+      ctx.arc(px, py, 9 * L, 0, Math.PI * 2);
+      ctx.moveTo(px - 14 * L, py); ctx.lineTo(px + 14 * L, py);
+      ctx.moveTo(px, py - 14 * L); ctx.lineTo(px, py + 14 * L);
       ctx.stroke();
     }
-    // Markierung (halbtransparent), Radierer-Striche nehmen sie wieder weg
+    // Markierung (halbtransparent): Henkel rot, Hinzufügen orange, Entfernen blau
     if (st.brush.length) {
+      brushCtx.setTransform(1, 0, 0, 1, 0, 0);
       brushCtx.clearRect(0, 0, brushLayer.width, brushLayer.height);
+      brushCtx.setTransform(d * S, 0, 0, d * S, d * view.ox, d * view.oy);
       brushCtx.lineCap = 'round';
       brushCtx.lineJoin = 'round';
       for (const b of st.brush) {
-        brushCtx.globalCompositeOperation = 'source-over';
-        brushCtx.strokeStyle = brushCtx.fillStyle = b.erase ? '#3aa0ff' : '#ff9a4d';
+        brushCtx.strokeStyle = brushCtx.fillStyle = b.erase ? '#3aa0ff' : b.henkel ? '#ff3d6e' : '#ff9a4d';
         brushCtx.lineWidth = 2 * b.r * w;
         brushCtx.beginPath();
         b.pts.forEach(([x, y], i) => (i ? brushCtx.lineTo(x * w, y * h) : brushCtx.moveTo(x * w, y * h)));
         if (b.pts.length === 1) { brushCtx.arc(b.pts[0][0] * w, b.pts[0][1] * h, b.r * w, 0, Math.PI * 2); brushCtx.fill(); }
         else brushCtx.stroke();
       }
-      brushCtx.globalCompositeOperation = 'source-over';
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.globalAlpha = 0.4;
-      ctx.drawImage(brushLayer, 0, 0, w, h);
+      ctx.drawImage(brushLayer, 0, 0);
       ctx.globalAlpha = 1;
+      ansicht();
     }
     if (st.mode !== 'rahmen') return;
     for (const [x, y] of [[(c.x0 + c.x1) / 2, c.y0], [(c.x0 + c.x1) / 2, c.y1], [c.x0, (c.y0 + c.y1) / 2], [c.x1, (c.y0 + c.y1) / 2]]) {
       ctx.beginPath();
-      ctx.arc(x * w, y * h, 10, 0, Math.PI * 2);
+      ctx.arc(x * w, y * h, 10 * L, 0, Math.PI * 2);
       ctx.fillStyle = '#fff';
       ctx.fill();
       ctx.strokeStyle = '#b5643c';
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 3 * L;
       ctx.stroke();
     }
   };
@@ -1022,12 +1058,14 @@ async function viewBlueprintEditor(id) {
     draw();
     const r = st.result;
     const erkannt = r ? `Erkannt: ${r.form.label} · Leitseite ${r.quality.leitseite}${r.handles.length ? ` · Henkel ${r.quality.henkelSeite || ''}` : ''}${r.quality.ergaenzt > 0.03 ? ` · ${Math.round(r.quality.ergaenzt * 100)} % aus Formwissen ergänzt` : ''}. ` : '';
+    const zoom = st.voll ? ' Mit zwei Fingern zoomen und verschieben.' : '';
     statusEl.textContent = error
-      || erkannt + (st.mode === 'rahmen'
-        ? 'Falsches Objekt erwischt? Tippe auf dein Stück. Sonst den Rahmen enger ziehen oder mit „Hinzufügen“ / „Entfernen“ korrigieren.'
-        : st.mode === 'pinsel'
-          ? 'Male mit dem Finger über Teile, die fehlen (z. B. einen Henkel).'
-          : 'Male über Teile, die nicht zum Stück gehören (z. B. Schatten).');
+      || erkannt + {
+        rahmen: 'Falsches Objekt erwischt? Tippe auf dein Stück. Sonst den Rahmen enger ziehen oder mit „Henkel“, „Hinzufügen“ / „Entfernen“ korrigieren.',
+        henkel: 'Male mit dem Finger über den Henkel. Der Körper bleibt dabei, wie er ist.',
+        pinsel: 'Male über Teile des Körpers, die fehlen.',
+        radierer: 'Male über Teile, die nicht zum Stück gehören (z. B. Schatten).',
+      }[st.mode] + zoom;
     statusEl.style.color = error ? 'var(--bad)' : '';
     previewEl.innerHTML = st.result ? blueprintSvg(p, st.result, false) : '';
     applyBtn.disabled = !st.result;
@@ -1043,48 +1081,105 @@ async function viewBlueprintEditor(id) {
     run();
   };
 
-  // Rahmen an den Kanten ziehen
-  let drag = null;
-  const rel = e => {
-    const r = canvas.getBoundingClientRect();
-    return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height];
+  // Vollbild zum genauen Zeichnen (mit zwei Fingern zoomen)
+  const vollbild = an => {
+    if (st.voll === an) return;
+    st.voll = an;
+    werkzeug.classList.toggle('vollbild', an);
+    document.body.classList.toggle('vollbild-offen', an);
+    if (!st.src) return;
+    layout();
+    run();
   };
-  let stroke = null;
+  $app.querySelector('#bp-voll').onclick = () => vollbild(!st.voll);
+  $app.querySelector('#bp-fertig').onclick = () => vollbild(false);
+  const onResize = () => {
+    if (!document.body.contains(canvas)) { window.removeEventListener('resize', onResize); return; }
+    if (!st.src) return;
+    layout();
+    draw();
+  };
+  window.addEventListener('resize', onResize);
+
+  // Zeiger: ein Finger malt bzw. zieht den Rahmen (im Zoom: verschiebt), zwei Finger zoomen
+  const lokal = e => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  const rel = e => {
+    const [x, y] = lokal(e);
+    return [(x - view.ox) / (box.w * view.S), (y - view.oy) / (box.h * view.S)];
+  };
+  const zeiger = new Map();
+  let drag = null, stroke = null, geste = null, tipp = null, schieben = null;
+  const zweiFinger = () => {
+    const [a, b] = [...zeiger.values()];
+    return { d: Math.hypot(a[0] - b[0], a[1] - b[1]) || 1, m: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] };
+  };
   canvas.addEventListener('pointerdown', e => {
+    zeiger.set(e.pointerId, lokal(e));
+    canvas.setPointerCapture(e.pointerId);
+    e.preventDefault();
+    if (zeiger.size === 2) {
+      // zweiter Finger: zoomen; einen eben begonnenen Strich verwerfen
+      if (stroke) { st.brush.splice(st.brush.indexOf(stroke), 1); stroke = null; }
+      drag = null; tipp = null; schieben = null;
+      const z = zweiFinger();
+      geste = { d0: z.d, m0: z.m, S0: view.S, ox0: view.ox, oy0: view.oy };
+      draw();
+      return;
+    }
+    if (zeiger.size > 2 || geste) return;
     const [x, y] = rel(e);
     if (st.mode !== 'rahmen') {
-      stroke = { r: st.brushSize / 100, pts: [[x, y]], ...(st.mode === 'radierer' ? { erase: true } : {}) };
+      // Pinsel in Bildschirmgröße: im Zoom feiner
+      const r = Math.round((st.brushSize / 100 / view.S) * 10000) / 10000;
+      stroke = { r, pts: [[x, y]], ...(st.mode === 'radierer' ? { erase: true } : st.mode === 'henkel' ? { henkel: true } : {}) };
       st.brush.push(stroke);
-      canvas.setPointerCapture(e.pointerId);
-      e.preventDefault();
       draw();
       return;
     }
     const c = st.crop;
-    const tx = 32 / box.w, ty = 32 / box.h;
+    const tx = 32 / (box.w * view.S), ty = 32 / (box.h * view.S);
     const inY = y > c.y0 - ty && y < c.y1 + ty;
     const inX = x > c.x0 - tx && x < c.x1 + tx;
     const cand = [['x0', Math.abs(x - c.x0) / tx, inY], ['x1', Math.abs(x - c.x1) / tx, inY], ['y0', Math.abs(y - c.y0) / ty, inX], ['y1', Math.abs(y - c.y1) / ty, inX]]
       .filter(a => a[2] && a[1] < 1)
       .sort((a, b) => a[1] - b[1]);
-    if (!cand.length) {
-      // Antippen im Rahmen: dieses Stück ist gemeint (falls die App ein Nachbarobjekt erwischt)
-      if (x > c.x0 && x < c.x1 && y > c.y0 && y < c.y1) {
-        st.punkt = { x: Math.round(x * 1000) / 1000, y: Math.round(y * 1000) / 1000 };
-        run();
-      }
-      return;
-    }
-    drag = cand[0][0];
-    canvas.setPointerCapture(e.pointerId);
-    e.preventDefault();
+    if (cand.length) { drag = cand[0][0]; return; }
+    // Antippen: dieses Stück ist gemeint (beim Loslassen, wenn nicht verschoben wurde)
+    tipp = { x, y, p: lokal(e) };
+    schieben = { p: lokal(e), ox: view.ox, oy: view.oy };
   });
   canvas.addEventListener('pointermove', e => {
+    if (!zeiger.has(e.pointerId)) return;
+    zeiger.set(e.pointerId, lokal(e));
+    if (geste) {
+      if (zeiger.size < 2) return;
+      const z = zweiFinger();
+      view.S = Math.max(1, Math.min(10, geste.S0 * (z.d / geste.d0)));
+      // der Punkt unter den Fingern bleibt unter den Fingern
+      const f = view.S / geste.S0;
+      view.ox = z.m[0] - (geste.m0[0] - geste.ox0) * f;
+      view.oy = z.m[1] - (geste.m0[1] - geste.oy0) * f;
+      begrenzen();
+      draw();
+      return;
+    }
     if (stroke) {
       const [x, y] = rel(e);
       const [lx, ly] = stroke.pts[stroke.pts.length - 1];
-      if (Math.hypot((x - lx) * box.w, (y - ly) * box.h) > Math.max(3, stroke.r * box.w * 0.3)) {
+      const sx = box.w * view.S, sy = box.h * view.S;
+      if (Math.hypot((x - lx) * sx, (y - ly) * sy) > Math.max(2, stroke.r * sx * 0.3)) {
         stroke.pts.push([Math.round(x * 10000) / 10000, Math.round(y * 10000) / 10000]);
+        draw();
+      }
+      return;
+    }
+    if (schieben) {
+      const [px, py] = lokal(e);
+      if (tipp && Math.hypot(px - tipp.p[0], py - tipp.p[1]) > 8) tipp = null;
+      if (!tipp) {
+        view.ox = schieben.ox + px - schieben.p[0];
+        view.oy = schieben.oy + py - schieben.p[1];
+        begrenzen();
         draw();
       }
       return;
@@ -1100,12 +1195,36 @@ async function viewBlueprintEditor(id) {
     if (drag === 'y1') c.y1 = cl(y, c.y0 + min, 1);
     draw();
   });
-  const endDrag = () => {
+  const endDrag = e => {
+    zeiger.delete(e.pointerId);
+    if (geste) { if (!zeiger.size) geste = null; return; }
     if (stroke) { stroke = null; run(); }
     if (drag) { drag = null; run(); }
+    if (tipp) {
+      const c = st.crop;
+      if (tipp.x > c.x0 && tipp.x < c.x1 && tipp.y > c.y0 && tipp.y < c.y1) {
+        st.punkt = { x: Math.round(tipp.x * 1000) / 1000, y: Math.round(tipp.y * 1000) / 1000 };
+        run();
+      }
+    }
+    tipp = null;
+    schieben = null;
   };
   canvas.addEventListener('pointerup', endDrag);
   canvas.addEventListener('pointercancel', endDrag);
+  // Mausrad / Trackpad: zoomen (im Vollbild)
+  canvas.addEventListener('wheel', e => {
+    if (!st.voll) return;
+    e.preventDefault();
+    const [mx, my] = lokal(e);
+    const S0 = view.S;
+    view.S = Math.max(1, Math.min(10, S0 * Math.exp(-e.deltaY * 0.002)));
+    const f = view.S / S0;
+    view.ox = mx - (mx - view.ox) * f;
+    view.oy = my - (my - view.oy) * f;
+    begrenzen();
+    draw();
+  }, { passive: false });
 
   let timer;
   $app.querySelector('#sens').addEventListener('input', e => {
@@ -1118,7 +1237,9 @@ async function viewBlueprintEditor(id) {
   $app.querySelector('#bp-mode').addEventListener('change', e => {
     st.mode = e.target.value;
     brushTools.hidden = st.mode === 'rahmen';
-    run();
+    // zum Malen ins Vollbild (dort mit zwei Fingern zoomen)
+    if (st.mode !== 'rahmen' && !st.voll) vollbild(true);
+    else run();
   });
   $app.querySelector('#brush-size').addEventListener('input', e => { st.brushSize = Number(e.target.value); });
   $app.querySelector('#brush-undo').onclick = () => { st.brush.pop(); run(); };
@@ -1139,6 +1260,8 @@ async function viewBlueprintEditor(id) {
   $app.querySelector('#bp-foto')?.addEventListener('click', async () => { if (await neuesFoto()) router(); });
 
   $app.querySelector('#cancel').onclick = () => $back.click();
+  // Seite verlassen (Zurück): Vollbild schließen
+  window.addEventListener('hashchange', () => document.body.classList.remove('vollbild-offen'), { once: true });
   applyBtn.onclick = async () => {
     if (!st.result) return;
     p.blueprint = makeBlueprint(st.photoId, st.crop, st.sens, st.result, prev, st.brush, st.gruppe, st.punkt);

@@ -82,6 +82,44 @@ await page.waitForSelector('#bp-preview svg', { timeout: 20000 });
 await page.waitForTimeout(400);
 console.log('Status:', await page.textContent('#bp-status'));
 await page.screenshot({ path: join(ausgabe, 'app-4-umriss.png'), fullPage: true });
+
+// Henkel-Werkzeug: öffnet das Vollbild; einseitig gemalter Henkel darf den Körper nicht ändern
+const lies = () => page.evaluate(() => new Promise(res => {
+  const r = indexedDB.open('toepferbuch');
+  r.onsuccess = () => { const q = r.result.transaction('pieces').objectStore('pieces').getAll(); q.onsuccess = () => res(q.result[0].blueprint); };
+}));
+const vorher = await lies();
+await page.click('#bp-mode input[value="henkel"] + span');
+await page.waitForSelector('.bp-werkzeug.vollbild');
+await page.waitForTimeout(300);
+const cdp = await ctx.newCDPSession(page);
+const box = await page.locator('.bp-werkzeug canvas').boundingBox();
+const P = (fx, fy) => ({ x: box.x + fx * box.width, y: box.y + fy * box.height });
+const touch = (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map((p, id) => ({ ...p, id })) });
+// Henkel rechts neben den Körper malen (ein Finger)
+const bogen = [[0.62, 0.43], [0.68, 0.44], [0.71, 0.48], [0.71, 0.52], [0.68, 0.56], [0.62, 0.57]];
+await touch('touchStart', [P(...bogen[0])]);
+for (const b of bogen.slice(1)) { await touch('touchMove', [P(...b)]); await page.waitForTimeout(30); }
+await touch('touchEnd', []);
+await page.waitForTimeout(600);
+console.log('Status (Henkel):', await page.textContent('#bp-status'));
+await page.screenshot({ path: join(ausgabe, 'app-5-vollbild-henkel.png') });
+// mit zwei Fingern hineinzoomen
+await touch('touchStart', [P(0.45, 0.5), P(0.55, 0.5)]);
+for (let k = 1; k <= 6; k++) { await touch('touchMove', [P(0.45 - k * 0.04, 0.5), P(0.55 + k * 0.04, 0.5)]); await page.waitForTimeout(30); }
+await touch('touchEnd', []);
+await page.waitForTimeout(300);
+await page.screenshot({ path: join(ausgabe, 'app-6-vollbild-zoom.png') });
+await page.click('#bp-fertig');
+await page.click('#apply');
+await page.waitForSelector('.bp-card svg', { timeout: 20000 });
+const nachher = await lies();
+const henkelStriche = nachher.brush.filter(b => b.henkel).length;
+let abw = 0;
+for (let i = 0; i < vorher.profile.length; i++) abw = Math.max(abw, Math.abs(vorher.profile[i] - nachher.profile[i]));
+console.log(`Henkel-Striche gespeichert: ${henkelStriche}, Henkel in der Blaupause: ${nachher.handles.length}, größte Änderung des Körpers: ${(abw * 100).toFixed(2)} % der Höhe`);
+if (!henkelStriche || !nachher.handles.length || abw > 0.005) fehler.push('Henkel-Werkzeug: Henkel fehlt oder Körper hat sich geändert');
+await page.screenshot({ path: join(ausgabe, 'app-7-werkstueck-henkel.png'), fullPage: true });
 const meta = await page.evaluate(() => new Promise(res => {
   const r = indexedDB.open('toepferbuch');
   r.onsuccess = () => { const q = r.result.transaction('photos').objectStore('photos').getAll(); q.onsuccess = () => res(q.result.map(p => p.kamera)); };

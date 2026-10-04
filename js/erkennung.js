@@ -291,6 +291,7 @@ function achseSuchen(T, w, h, mitte, streuung) {
 
 const FARBE = !(typeof process !== 'undefined' && process.env?.OHNE_FARBE);
 const BODEN_ELLIPSE = !(typeof process !== 'undefined' && process.env?.OHNE_BODEN);
+const RAND_ECKE = !(typeof process !== 'undefined' && process.env?.OHNE_ECKE);
 const ALPHA_S = 6; // Gewicht der Kanten
 const RHO = 0.8; // Gewicht der Farbfläche (zweiter Durchgang)
 const C_ON = 8, C_OFF = 8;
@@ -552,7 +553,8 @@ function kappeKosten(hw, ry) {
 
 function pinsel(q, brush, w, h, IW, IH, x0, y0) {
   for (const st of brush) {
-    const R = st.r * IW;
+    // mindestens etwa ein Pixel der Analyse (feiner Pinsel im Zoom)
+    const R = Math.max(0.75, st.r * IW);
     const pts = st.pts.map(([x, y]) => [x * IW - x0, y * IH - y0]);
     const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
     const bx0 = Math.max(0, Math.floor(Math.min(...xs) - R)), bx1 = Math.min(w - 1, Math.ceil(Math.max(...xs) + R));
@@ -580,8 +582,28 @@ function pinsel(q, brush, w, h, IW, IH, x0, y0) {
  * crop: Rahmen (relativ), sens: Empfindlichkeit 0–100, brush: Pinselstriche
  * hint: { gruppe, familie, guide: {x0,y0,x1,y1}, blick: Grad nach unten (Lagesensor), brennweite,
  *         punkt: {x,y} angetipptes Stück (relativ) }
+ * Pinselstriche: { r, pts, erase? , henkel? } – „henkel“ markiert einen Henkel (ändert den Körper nie),
+ * „erase“ nimmt weg, sonst wird hinzugefügt. Hinzugefügtes zählt nur dann zum Körper, wenn es auch
+ * gespiegelt zum Stück passt; was nur auf einer Seite dazukommt, ist ein Henkel.
  */
-export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS, brush = [], hint = {} } = {}) {
+export function analyze(src, opts = {}) {
+  const res = analyseLauf(src, opts);
+  // Henkel am Rand des Ausschnitts abgeschnitten (Stück nicht genau in der Maske, breiter Henkel):
+  // Ausschnitt zu dieser Seite erweitern und noch einmal erkennen
+  const s = res.abgeschnitten;
+  if (!s) return res.ergebnis;
+  const c = { ...(opts.crop || DEFAULT_CROP) };
+  const breite = res.koerperBreite * 0.9;
+  if (s < 0) c.x0 = Math.max(0, c.x0 - breite); else c.x1 = Math.min(1, c.x1 + breite);
+  try {
+    const r2 = analyseLauf(src, { ...opts, crop: c });
+    // nur übernehmen, wenn der Körper derselbe geblieben ist
+    if (Math.abs(r2.koerperBreite - res.koerperBreite) < 0.15 * res.koerperBreite) return r2.ergebnis;
+  } catch { /* erste Erkennung behalten */ }
+  return res.ergebnis;
+}
+
+function analyseLauf(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS, brush = [], hint = {} } = {}) {
   const { width: IW, height: IH, data } = src;
   const x0 = clamp(Math.round(crop.x0 * IW), 0, IW - 16);
   const x1 = clamp(Math.round(crop.x1 * IW), x0 + 16, IW);
@@ -594,11 +616,19 @@ export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS, brush =
   const schwelle = 2 ** ((50 - sens) / 50);
   const band = Math.max(3, Math.round(0.035 * Math.min(w, h)));
 
-  // Pinsel: „Entfernen“ löscht dort die Kanten, „Hinzufügen“ zählt im zweiten Durchgang als Stück
-  if (brush.length) {
+  // Pinsel: „Entfernen“ löscht dort die Kanten, „Hinzufügen“ zählt im zweiten Durchgang als Stück,
+  // „Henkel“ wirkt nur auf den Henkel
+  const brushK = brush.filter(b => !b.henkel);
+  const pinselK = brushK.length ? new Float32Array(n) : null;
+  if (pinselK) {
+    pinsel(pinselK, brushK, w, h, IW, IH, x0, y0);
+    for (let k = 0; k < n; k++) if (pinselK[k] < 0) { T.xx[k] = T.xy[k] = T.yy[k] = 0; T.E[k] = 0; }
+  }
+  let gemalt = null;
+  if (brush.some(b => b.henkel)) {
     const m = new Float32Array(n);
-    pinsel(m, brush, w, h, IW, IH, x0, y0);
-    for (let k = 0; k < n; k++) if (m[k] < 0) { T.xx[k] = T.xy[k] = T.yy[k] = 0; T.E[k] = 0; }
+    pinsel(m, brush.filter(b => b.henkel), w, h, IW, IH, x0, y0);
+    gemalt = Uint8Array.from(m, v => (v > 0 ? 1 : 0));
   }
 
   // Aufnahme-Maske im Ausschnitt
@@ -607,6 +637,8 @@ export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS, brush =
   } : null;
   const ctx = {
     w, h, T, E: T.E, lab, band, q: null, achse: null,
+    // links/rechts geht das Foto über den Ausschnitt hinaus (dorthin lässt er sich erweitern)
+    randOffen: [x0 > 0, x1 < IW],
     // Kamera: optische Achse in der Bildmitte, Brennweite (Anteil der langen Bildseite), Neigung
     geo: {
       cy: IH / 2 - y0,
@@ -653,12 +685,15 @@ export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS, brush =
   // 3. Farbmodelle: innen = Stück, gleich daneben = Hintergrund (nicht der ganze Bildrand)
   const { fg, bg } = farbmodelleAus(lab, pfad.u, achse, w, h, band);
   const q = stueckKarte(lab, fg, bg, w, h, bias);
-  pinsel(q, brush, w, h, IW, IH, x0, y0);
+  // für den Henkel: alles Hinzugefügte zählt als Stück
+  const qH = pinselK ? q.slice() : q;
+  if (pinselK) for (let k = 0; k < n; k++) if (pinselK[k]) qH[k] = pinselK[k];
+  pinselSymmetrisch(q, pinselK, achse, w, h);
   ctx.q = q;
   // für den Rand: Die Farbe des Stücks darf dort deutlich dunkler sein (Rundung, Unschärfe)
   if (FARBE) {
     ctx.qRand = stueckKarte(lab, fg, bg, w, h, bias, 0.28);
-    pinsel(ctx.qRand, brush, w, h, IW, IH, x0, y0);
+    pinselSymmetrisch(ctx.qRand, pinselK, achse, w, h);
   }
 
   // 4. Messen, Perspektive, Formwissen; dann mit Farbe und Erwartung ein zweites Mal suchen
@@ -671,8 +706,34 @@ export function analyze(src, { crop = DEFAULT_CROP, sens = DEFAULT_SENS, brush =
   const erg2 = messen(ctx, pfad2, hint);
   if (erg2) erg = erg2;
 
-  const henkel = henkelFinden(ctx, erg, brush.length > 0);
-  return ergebnis(erg, henkel, { IW, IH, x0, y0, w, h });
+  const henkel = henkelFinden(ctx, erg, { qH, mitPinsel: brush.length > 0, gemalt, radiert: pinselK && Uint8Array.from(pinselK, v => (v < 0 ? 1 : 0)) });
+  let breite = 0;
+  for (let y = 0; y < h; y++) breite = Math.max(breite, erg.silh[y]);
+  return {
+    ergebnis: ergebnis(erg, henkel.maske ? henkel : null, { IW, IH, x0, y0, w, h }),
+    abgeschnitten: henkel.abgeschnitten,
+    koerperBreite: (2 * breite) / IW,
+  };
+}
+
+// Pinselstriche in die Stück-Karte für den Körper einrechnen. Ein Drehteil ist spiegelgleich:
+// Hinzugefügtes zählt nur, wo auch die Gegenseite hinzugefügt ist oder nach Stück aussieht.
+// Einseitig Hinzugefügtes (meist ein Henkel) zieht den Körper so nicht breiter.
+function pinselSymmetrisch(q, m, achse, w, h) {
+  if (!m) return;
+  const q0 = q.slice();
+  for (let y = 0; y < h; y++) {
+    const a2 = 2 * achse(y);
+    for (let x = 0; x < w; x++) {
+      const k = y * w + x;
+      if (m[k] < 0) { q[k] = -1; continue; }
+      if (!(m[k] > 0)) continue;
+      const xm = Math.round(a2 - x);
+      const km = y * w + xm;
+      const gegen = xm >= 0 && xm < w && (m[km] > 0 || q0[km] > 0.2);
+      q[k] = gegen ? 1 : Math.max(q0[k], 0);
+    }
+  }
 }
 
 function spiegelUngleichheit(lab, w, h, a, us) {
@@ -968,6 +1029,7 @@ function profilBerechnen(ctx, achse, hw, wt, top, bottom, hint, info) {
     }
   }
   const r = Float64Array.from(rho, v => v / HD); // Radius / Höhe
+  if (RAND_ECKE) randEckeSchaerfen(r, mw);
 
   // Formwissen: auf N Stellen zusammenfassen, Familie anpassen
   const N = MODELL_N;
@@ -1018,6 +1080,46 @@ function profilBerechnen(ctx, achse, hw, wt, top, bottom, hint, info) {
     xVon: (dx, y) => (dx * P.zc(P.Y(y))) / geo.f / HD,
     zeileVon: t => P.zeile(Yr - t * HD),
   };
+}
+
+// Obere Ecke: Die Öffnung erscheint als flache Ellipse; ihre Rundung reicht seitlich bis zur
+// Randhöhe hinunter. Stimmen Neigung oder Brennweite nicht ganz (Lagesensor, Zoom), gerät ein Stück
+// dieses Bogens ins Profil, und die Wand biegt oben scheinbar nach innen: Die Ecken werden rund.
+// Ebenso schneidet die Kantensuche eine schwache Ecke leicht ab (hinterer Rand unscharf, wenig
+// Kontrast). Getöpferte Wände laufen aber bis zum Rand durch. Darum: Biegt das Profil nur in den
+// obersten Prozent der Höhe und viel stärker als die Wand darunter nach innen, die Wand bis zum
+// Rand fortsetzen (Parabel durch die Wand darunter). Ausgestellte Ränder bleiben unberührt.
+function randEckeSchaerfen(r, mw) {
+  const M = r.length;
+  const i0 = Math.round(0.045 * (M - 1)), i1 = Math.round(0.16 * (M - 1));
+  // gewichtete Parabel durch die Wand darunter (Stellen relativ zu i0)
+  let s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, t0 = 0, t1 = 0, t2 = 0;
+  for (let i = i0; i <= i1; i++) {
+    const w = Math.max(0.05, mw[i] || 0), u = (i - i0) / (M - 1), u2 = u * u;
+    s0 += w; s1 += w * u; s2 += w * u2; s3 += w * u2 * u; s4 += w * u2 * u2;
+    t0 += w * r[i]; t1 += w * u * r[i]; t2 += w * u2 * r[i];
+  }
+  const det = s0 * (s2 * s4 - s3 * s3) - s1 * (s1 * s4 - s3 * s2) + s2 * (s1 * s3 - s2 * s2);
+  if (!(Math.abs(det) > 1e-18)) return;
+  const c0 = (t0 * (s2 * s4 - s3 * s3) - s1 * (t1 * s4 - s3 * t2) + s2 * (t1 * s3 - s2 * t2)) / det;
+  const c1 = (s0 * (t1 * s4 - s3 * t2) - t0 * (s1 * s4 - s3 * s2) + s2 * (s1 * t2 - t1 * s2)) / det;
+  const c2 = (s0 * (s2 * t2 - t1 * s3) - s1 * (s1 * t2 - t1 * s2) + t0 * (s1 * s3 - s2 * s2)) / det;
+  const g = i => { const u = (i - i0) / (M - 1); return c0 + c1 * u + c2 * u * u; };
+  // Streuung der Wand um die Parabel
+  let q = 0, n = 0;
+  for (let i = i0; i <= i1; i++) { q += (r[i] - g(i)) ** 2; n++; }
+  const sd = Math.sqrt(q / n);
+  const rw = Math.max(1e-3, g(i0));
+  // Die Fortsetzung darf selbst nicht stark biegen (sonst ist es eine echte Schulter)
+  if (Math.abs(g(0) - (c0 - c1 * (i0 / (M - 1)))) > 0.04 * rw) return;
+  const tol = Math.max(3 * sd, 0.006 * rw);
+  const def0 = g(0) - r[0];
+  if (def0 < Math.max(tol, 0.015 * rw) || def0 > 0.2 * rw) return;
+  // Rundung: das Defizit wächst zur Öffnung hin
+  for (let i = 0; i < i0; i++) {
+    const d = g(i) - r[i];
+    if (d > tol) r[i] = g(i);
+  }
 }
 
 // Lochkamera: Kamera im Ursprung, um e nach unten geneigt; die Achse des Stücks steht
@@ -1108,8 +1210,17 @@ function erwartungAus(erg, h) {
 // Henkel
 // ---------------------------------------------------------------------------
 
-function henkelFinden(ctx, erg, mitPinsel) {
-  const { w, h, q } = ctx;
+// Henkel finden: was außerhalb des Körpers seitlich am Stück hängt.
+// - In zwei Stufen (Hysterese): Sicher nach Stück aussehende Stellen sind Keime; von dort aus
+//   gehören auch unsichere Stellen dazu (Glanzlicht, Schattenseite, Mischpixel am Rand), solange
+//   sie nicht klar nach Hintergrund aussehen. So zerfällt ein Henkel nicht in Teilstücke.
+// - Teilstücke auf derselben Seite, die nah beieinander liegen, zählen als ein Henkel.
+// - gemalt: vom Nutzer als Henkel markierte Fläche (gilt immer; Henkelloch und Ränder, die klar
+//   Hintergrund sind, werden herausgenommen); radiert: vom Nutzer entfernte Fläche.
+// Liefert außerdem, ob ein Henkel am linken/rechten Rand des Ausschnitts abgeschnitten ist.
+function henkelFinden(ctx, erg, { qH = ctx.q, mitPinsel = false, gemalt = null, radiert = null } = {}) {
+  const { w, h } = ctx;
+  const q = qH;
   const n = w * h;
   const koerper = new Uint8Array(n);
   for (let y = 0; y < h; y++) {
@@ -1121,56 +1232,105 @@ function henkelFinden(ctx, erg, mitPinsel) {
   const nahe = dilate(koerper, w, h, Math.max(6, Math.round(0.06 * erg.hImg)));
   const weit = dilate(koerper, w, h, 2);
   const yMin = erg.randZeile - 0.08 * erg.hImg, yMax = erg.bodenZeile - 0.05 * erg.hImg;
-  const kand = new Uint8Array(n);
+  const maxReach = 0.6 * erg.hTrue;
+  const stark = new Uint8Array(n), schwach = new Uint8Array(n);
   let koerperFl = 0;
   for (let k = 0; k < n; k++) koerperFl += koerper[k];
   const { L, A, B } = ctx.lab;
   const thr = mitPinsel ? 0.05 : 0.15;
   for (let y = Math.max(0, Math.floor(yMin)); y <= Math.min(h - 1, yMax); y++) {
-    // Hintergrund in dieser Höhe (linker und rechter Bildrand): Farben, die dem gleichen, sind kein Henkel
+    // Hintergrund in dieser Höhe (linker und rechter Bildrand): Farben, die dem gleichen, sind kein
+    // Henkel – außer am Rand liegt selbst Stück (der Ausschnitt schneidet den Henkel ab)
     const ref = [];
     for (const xs of [[0, ctx.band], [w - ctx.band, w]]) {
-      let sL = 0, sA = 0, sB = 0, c = 0;
-      for (let yy = Math.max(0, y - 3); yy <= Math.min(h - 1, y + 3); yy++) for (let x = xs[0]; x < xs[1]; x++) { const k = yy * w + x; sL += L[k]; sA += A[k]; sB += B[k]; c++; }
-      if (c) ref.push([sL / c, sA / c, sB / c]);
+      let sL = 0, sA = 0, sB = 0, sq = 0, c = 0;
+      for (let yy = Math.max(0, y - 3); yy <= Math.min(h - 1, y + 3); yy++) for (let x = xs[0]; x < xs[1]; x++) { const k = yy * w + x; sL += L[k]; sA += A[k]; sB += B[k]; sq += q[k]; c++; }
+      if (c && sq / c < 0.2) ref.push([sL / c, sA / c, sB / c]);
     }
+    const a = erg.achse(y), sw = Math.max(0, erg.silh[y]);
     for (let x = 0; x < w; x++) {
       const k = y * w + x;
-      if (weit[k]) continue;
-      if (q[k] <= thr) continue;
-      if (q[k] < 0.9 && ref.some(r => 0.5 * (L[k] - r[0]) ** 2 + (A[k] - r[1]) ** 2 + (B[k] - r[2]) ** 2 < 64)) continue;
-      kand[k] = 1;
+      if (weit[k] || Math.abs(x - a) - sw > maxReach) continue;
+      const wieHinten = ref.some(r => 0.5 * (L[k] - r[0]) ** 2 + (A[k] - r[1]) ** 2 + (B[k] - r[2]) ** 2 < 64);
+      if (q[k] > thr && (q[k] >= 0.9 || !wieHinten)) stark[k] = 1;
+      if (q[k] > -0.25 && !wieHinten) schwach[k] = 1;
     }
   }
-  const sauber = dilate(erode(kand, w, h, 1), w, h, 1);
-  const { lab, info } = komponenten(sauber, w, h, 1);
-  const henkel = [];
-  info.forEach((c, i) => {
-    if (c.area < Math.max(25, koerperFl * 0.006)) return;
-    // muss am Körper hängen
-    let beruehrt = 0, minY = Infinity, maxY = -Infinity, reach = 0, sx = 0;
-    for (let k = 0; k < n; k++) {
-      if (lab[k] !== i + 1) continue;
-      const y = (k / w) | 0, x = k % w;
-      if (nahe[k] || (x > 0 && nahe[k - 1]) || (x < w - 1 && nahe[k + 1])) beruehrt++;
-      minY = Math.min(minY, y); maxY = Math.max(maxY, y);
-      const a = erg.achse(y);
-      reach = Math.max(reach, Math.abs(x - a) - Math.max(0, erg.silh[y]));
-      sx += x - a;
+  // von den Keimen aus in die unsicheren Stellen wachsen
+  const kand = stark.slice();
+  {
+    const queue = new Int32Array(n);
+    let qh = 0, qt = 0;
+    for (let k = 0; k < n; k++) if (kand[k]) queue[qt++] = k;
+    while (qh < qt) {
+      const p = queue[qh++], x = p % w;
+      for (const nb of [x > 0 ? p - 1 : -1, x < w - 1 ? p + 1 : -1, p - w, p + w]) {
+        if (nb < 0 || nb >= n || kand[nb] || !schwach[nb]) continue;
+        kand[nb] = 1;
+        queue[qt++] = nb;
+      }
     }
-    if (beruehrt < 3) return;
-    if (maxY - minY < 0.12 * erg.hImg || maxY - minY > 1.05 * erg.hImg || reach < 0.09 * erg.hTrue || reach > 0.8 * erg.hTrue || c.area / (maxY - minY + 1) < 3) return;
-    if (minY > erg.randZeile + 0.6 * erg.hImg) return; // nur unten: Schatten auf dem Tisch
-    henkel.push({ id: i + 1, side: Math.sign(sx) || 1 });
-  });
-  if (!henkel.length) return null;
-  // Henkel samt Ansatzstücken in den Körper hinein (damit die Kontur geschlossen ist)
+  }
+  // kleine Lücken schließen (Glanzstreifen quer über den Henkel), Krümel weg
+  const sauber = erode(dilate(dilate(erode(kand, w, h, 1), w, h, 1), w, h, 1), w, h, 1);
+  const { lab, info } = komponenten(sauber, w, h, 1);
+  const stat = info.map((c, i) => ({ id: i + 1, area: c.area, beruehrt: 0, sx: 0, rand: 0 }));
+  for (let k = 0; k < n; k++) {
+    const id = lab[k];
+    if (!id) continue;
+    const s = stat[id - 1], x = k % w, y = (k / w) | 0;
+    if (nahe[k] || (x > 0 && nahe[k - 1]) || (x < w - 1 && nahe[k + 1])) s.beruehrt++;
+    s.sx += x - erg.achse(y);
+    if (x === 0) s.rand = -1; else if (x === w - 1) s.rand = 1;
+  }
+  // am Körper hängende Teile, dazu Teile derselben Seite in ihrer Nähe
+  const dabei = new Uint8Array(info.length + 1);
+  for (const s of stat) if (s.beruehrt >= 3 && s.area >= 12) dabei[s.id] = 1;
+  for (let runde = 0; runde < 2; runde++) {
+    const M0 = new Uint8Array(n);
+    for (let k = 0; k < n; k++) if (dabei[lab[k]]) M0[k] = 1;
+    const umg = dilate(M0, w, h, 4);
+    for (let k = 0; k < n; k++) if (lab[k] && !dabei[lab[k]] && umg[k] && stat[lab[k] - 1].area >= 12) dabei[lab[k]] = 1;
+  }
+  let abgeschnitten = 0;
+  const henkel = [];
+  for (const side of [-1, 1]) {
+    const teile = stat.filter(s => dabei[s.id] && Math.sign(s.sx) === side);
+    if (!teile.length) continue;
+    const ids = new Set(teile.map(s => s.id));
+    let area = 0, minY = Infinity, maxY = -Infinity, reach = 0;
+    for (let k = 0; k < n; k++) {
+      if (!ids.has(lab[k])) continue;
+      const y = (k / w) | 0, x = k % w;
+      area++;
+      minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+      reach = Math.max(reach, Math.abs(x - erg.achse(y)) - Math.max(0, erg.silh[y]));
+    }
+    if (teile.some(s => s.rand === side) && ctx.randOffen?.[side > 0 ? 1 : 0]) abgeschnitten = side;
+    if (area < Math.max(25, koerperFl * 0.006)) continue;
+    if (maxY - minY < 0.12 * erg.hImg || maxY - minY > 1.05 * erg.hImg || reach < 0.09 * erg.hTrue || area / (maxY - minY + 1) < 3) continue;
+    if (minY > erg.randZeile + 0.6 * erg.hImg) continue; // nur unten: Schatten auf dem Tisch
+    henkel.push({ ids, side });
+  }
   const M = new Uint8Array(n);
-  for (let k = 0; k < n; k++) if (henkel.some(hk => hk.id === lab[k])) M[k] = 1;
+  for (let k = 0; k < n; k++) if (henkel.some(hk => hk.ids.has(lab[k]))) M[k] = 1;
+  // vom Nutzer gemalt: gilt; nur klar nach Hintergrund Aussehendes (Henkelloch) fällt weg –
+  // außer die Farben trennen Stück und Hintergrund dort gar nicht (dann zählt der Strich)
+  if (gemalt) {
+    let fl = 0, gut = 0;
+    for (let k = 0; k < n; k++) if (gemalt[k] && !koerper[k]) { fl++; if (ctx.q[k] > -0.3) gut++; }
+    const trennt = gut >= 0.25 * fl;
+    for (let k = 0; k < n; k++) if (gemalt[k] && !koerper[k] && (!trennt || ctx.q[k] > -0.4)) M[k] = 1;
+  }
+  if (radiert) for (let k = 0; k < n; k++) if (radiert[k]) M[k] = 0;
+  let sx = 0, fl = 0;
+  for (let k = 0; k < n; k++) if (M[k] && !koerper[k]) { sx += (k % w) - erg.achse((k / w) | 0); fl++; }
+  if (fl < 15) return { maske: null, side: 0, abgeschnitten };
+  // Henkel samt Ansatzstücken in den Körper hinein (damit die Kontur geschlossen ist)
   const ans = dilate(M, w, h, 4);
   for (let k = 0; k < n; k++) if (ans[k] && koerper[k]) M[k] = 1;
   const voll = fillHolesBelow(dilate(erode(M, w, h, 1), w, h, 1), w, h, Math.max(12, koerperFl * 0.002));
-  return { maske: voll, side: henkel[0].side };
+  return { maske: voll, side: henkel[0]?.side || Math.sign(sx) || 1, abgeschnitten };
 }
 
 // ---------------------------------------------------------------------------

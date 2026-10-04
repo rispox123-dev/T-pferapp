@@ -156,7 +156,9 @@ export function profileAt(prof) {
 
 export function estimate(bp, values = {}, pos = {}) {
   const scales = [];
-  const pts = effectivePoints(bp);
+  // Die eingetragene Höhe legt den Maßstab fest; die Durchmesser passen dann die Form an (abgleich)
+  const hoehe = Number(values.hoehe);
+  const pts = values.hoehe != null && values.hoehe !== '' && hoehe > 0 ? (scales.push(hoehe), []) : effectivePoints(bp);
   for (const p of pts) {
     const v = Number(values[p.key]);
     if (values[p.key] != null && v > 0 && p.m > 0) scales.push(v / p.m);
@@ -172,6 +174,128 @@ export function estimate(bp, values = {}, pos = {}) {
     value: p => (scale ? p.m * scale : null),
     pos: p => (scale && p.t != null ? (1 - p.t) * scale : null),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Abgleich: die Zeichnung an die eingetragenen Maße anpassen
+// ---------------------------------------------------------------------------
+
+// Das Foto liefert die Form, eingetragene Maße sind genauer. Darum wird das Profil so
+// verformt, dass jedes eingetragene Maß genau getroffen wird:
+// - Durchmesser: Zwischen zwei eingetragenen Stellen bleibt der Verlauf erhalten, wird aber
+//   auf die beiden Maße gestreckt. Steigt oder fällt die Wand dort nur, gilt das genau: Sind
+//   beide Maße gleich, wird die Wand dazwischen gerade (z. B. Taille = Öffnung → senkrecht bis
+//   zum Rand; eine im Foto abgerundete Ecke verschwindet). Hat die Wand dazwischen einen eigenen
+//   Bauch oder eine Einziehung, wird stattdessen anteilig vergrößert bzw. verkleinert. Über die
+//   äußersten eingetragenen Stellen hinaus gilt deren Verhältnis.
+// - Höhenlage einer Stelle („auf welcher Höhe“): Die Stelle rückt dorthin, die Abschnitte
+//   darüber und darunter werden gestaucht bzw. gestreckt.
+// Henkel wandern mit dem Körper mit.
+// Liefert Profil, Stellen (mit angepasster Lage t und Durchmesser m), Henkel, Maßstab und
+// Umrechnung der Lage (neu → wie im Foto).
+export function abgleich(bp, values = {}, pos = {}) {
+  const prof0 = begradigen(bp.profile);
+  const n = prof0.length;
+  const at0 = profileAt(prof0);
+  const pts0 = effectivePoints(bp);
+  const scale = estimate(bp, values, pos).scale;
+  const zahl = v => (v != null && v !== '' && Number(v) > 0 ? Number(v) : null);
+  // Schätzung eines Maßes (cm) aus Durchmesser m bzw. Lage t einer Stelle
+  const value = p => (scale ? p.m * scale : null);
+  const lage = p => (scale && p.t != null ? (1 - p.t) * scale : null);
+  if (!scale) return { profile: prof0, points: pts0, handles: bp.handles || [], scale, value, pos: lage, angepasst: false, tFoto: t => t };
+
+  // Höhenlagen: t (Foto) → t (Maß), stückweise linear und streng steigend
+  const lagen = [[0, 0]];
+  for (const p of [...pts0].filter(p => p.t > 0 && p.t < 1 && zahl(pos[p.key])).sort((a, b) => a.t - b.t)) {
+    const tn = clamp(1 - zahl(pos[p.key]) / scale, 0.01, 0.99);
+    if (tn > lagen[lagen.length - 1][1] + 0.01 && p.t > lagen[lagen.length - 1][0] + 0.005) lagen.push([p.t, tn]);
+  }
+  lagen.push([1, 1]);
+  const stueck = (pairs, a, b) => t => {
+    if (t <= 0 || t >= 1) return t;
+    for (let i = 1; i < pairs.length; i++) {
+      if (t <= pairs[i][a]) { const [p, q] = [pairs[i - 1], pairs[i]]; return p[b] + ((t - p[a]) / (q[a] - p[a])) * (q[b] - p[b]); }
+    }
+    return t;
+  };
+  const tNeu = stueck(lagen, 0, 1), tFoto = stueck(lagen, 1, 0);
+
+  // Durchmesser: Ankerstellen (Lage wie im Foto, Radius im Foto, Radius laut Maß, in Höhen)
+  const anker = [];
+  for (const p of pts0) {
+    const v = zahl(values[p.key]);
+    if (!v || p.t == null) continue;
+    const r0 = at0(p.t);
+    if (!(r0 > 1e-4)) continue;
+    const a = { t: p.t, r0, r: v / 2 / scale };
+    const gleich = anker.findIndex(x => Math.abs(x.t - a.t) < 1e-3);
+    if (gleich >= 0) anker[gleich] = a; else anker.push(a);
+  }
+  anker.sort((a, b) => a.t - b.t);
+  // Liegt zwischen zwei Ankern eine eigene weiteste oder engste Stelle, wird sie ein Zwischenanker:
+  // Sie bekommt die kleinere der beiden Korrekturen (die größere ist meist ein örtlicher Messfehler,
+  // z. B. ein im Foto abgerundeter Rand); die Abschnitte daneben steigen bzw. fallen dann nur.
+  for (let k = anker.length - 2; k >= 0; k--) {
+    const a = anker[k], b = anker[k + 1];
+    if (gleichmaessig(a, b)) continue;
+    const fa = a.r / a.r0, fb = b.r / b.r0;
+    const f = Math.abs(fa - 1) <= Math.abs(fb - 1) ? fa : fb;
+    const lo = Math.min(a.r0, b.r0), hi = Math.max(a.r0, b.r0), tol = Math.max(0.006, 0.03 * hi);
+    let iMax = -1, iMin = -1;
+    for (let i = Math.ceil(a.t * (n - 1)) + 1; i < Math.floor(b.t * (n - 1)); i++) {
+      if (prof0[i] > hi + tol && (iMax < 0 || prof0[i] > prof0[iMax])) iMax = i;
+      if (prof0[i] < lo - tol && (iMin < 0 || prof0[i] < prof0[iMin])) iMin = i;
+    }
+    const neu = [iMax, iMin].filter(i => i >= 0).sort((x, y) => x - y).map(i => ({ t: i / (n - 1), r0: prof0[i], r: prof0[i] * f }));
+    anker.splice(k + 1, 0, ...neu);
+  }
+  const radius = t => {
+    const r = at0(t);
+    if (!anker.length) return r;
+    const A = anker[0], Z = anker[anker.length - 1];
+    if (t <= A.t) return (r * A.r) / A.r0;
+    if (t >= Z.t) return (r * Z.r) / Z.r0;
+    let k = 0;
+    while (anker[k + 1].t < t) k++;
+    const a = anker[k], b = anker[k + 1];
+    const s = (t - a.t) / (b.t - a.t || 1);
+    const anteilig = r * ((1 - s) * (a.r / a.r0) + s * (b.r / b.r0));
+    const d0 = b.r0 - a.r0;
+    if (Math.abs(d0) < 0.004) {
+      // im Foto gleich weit: gleich weit lassen, aber auf die Maße schieben
+      return Math.abs(b.r - a.r) < 1e-6 && gleichmaessig(a, b) ? a.r : anteilig;
+    }
+    // Wand steigt bzw. fällt dazwischen nur (Bauch oder Einziehung fehlen): genau strecken
+    if (!gleichmaessig(a, b)) return anteilig;
+    const f = (b.r - a.r) / d0;
+    if (f < 0 || f > 4) return anteilig;
+    return a.r + (r - a.r0) * f;
+  };
+  // Liegt die Wand zwischen a und b innerhalb der beiden Radien (kleine Toleranz)?
+  function gleichmaessig(a, b) {
+    const lo = Math.min(a.r0, b.r0), hi = Math.max(a.r0, b.r0);
+    const tol = Math.max(0.006, 0.03 * hi);
+    for (let i = Math.ceil(a.t * (n - 1)); i <= Math.floor(b.t * (n - 1)); i++) if (prof0[i] < lo - tol || prof0[i] > hi + tol) return false;
+    return true;
+  }
+
+  const profile = Array.from({ length: n }, (_, i) => Math.max(0, radius(tFoto(i / (n - 1)))));
+  let abw = 0;
+  for (let i = 0; i < n; i++) abw = Math.max(abw, Math.abs(profile[i] - prof0[i]));
+  const at = profileAt(profile);
+  const points = pts0.map(p => {
+    if (p.t == null) return p;
+    const t = Math.round(tNeu(p.t) * 1000) / 1000;
+    return { ...p, t, m: Math.round(2 * at(t) * 10000) / 10000 };
+  });
+  // Henkel: Lage mitnehmen, seitlich um die Änderung des Körpers verschieben
+  const handles = (bp.handles || []).map(h => h.map(([x, t]) => {
+    const tk = clamp(t, 0, 1);
+    const d = radius(tk) - at0(tk);
+    return [x + Math.sign(x) * d, t + (tNeu(tk) - tk)];
+  }));
+  return { profile, points, handles, scale, value, pos: lage, angepasst: abw > 0.004, tFoto };
 }
 
 // ---------------------------------------------------------------------------
@@ -289,16 +413,17 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
   // von Hand geschrieben: jede Beschriftung sitzt ein wenig anders
   const hand = rng(seed);
   const schief = (x, y) => ` transform="rotate(${((hand() - 0.5) * 2.4).toFixed(2)} ${x} ${y})"`;
-  // auch ältere, noch nicht begradigte Profile sauber zeichnen
-  const prof = begradigen(bp.profile);
+  // an die eingetragenen Maße angeglichen (auch ältere, noch nicht begradigte Profile sauber)
+  const abg = abgleich(bp, values, pos);
+  const prof = abg.profile;
   const W = 400;
   const rAt = profileAt(prof);
   const v = ansicht(prof);
   const { sb, cb } = v;
 
   // Henkel sind aus Bildpunkten nachgezogen (Treppenstufen): ruhig glätten
-  const handles = (bp.handles || []).filter(h => h.length > 3).map(h => glattGeschlossen(h));
-  const hm = henkelMasse(bp);
+  const handles = abg.handles.filter(h => h.length > 3).map(h => glattGeschlossen(h));
+  const hm = henkelMasse({ profile: prof, handles: abg.handles });
   // Beschriftung auf die Seite ohne Henkel, Höhenmaß auf die andere
   const side = hm[0]?.side > 0 ? -1 : 1;
 
@@ -319,9 +444,9 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
   const axis = (side > 0 ? 64 : 152) + extL * Hd;
   const labelX = side > 0 ? Math.min(axis + extR * Hd + 34, W - 118) : Math.max(axis - extL * Hd - 34, 118);
   const hx = side > 0 ? axis - extL * Hd - 30 : axis + extR * Hd + 30;
-  const est = estimate(bp, values, pos);
+  const est = abg;
 
-  const points = effectivePoints(bp);
+  const points = abg.points;
   const yOf = t => top + t * cb * Hd;
   const arc = (t, front, r = rAt(t)) => {
     const rx = r * Hd, ry = rx * sb, y = yOf(t);
@@ -369,6 +494,7 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
     }
   });
   info = [...info, ...attInfo];
+  if (abg.angepasst) info.push('Form an die eingetragenen Maße angepasst');
 
   // Beschriftungen ohne Überlappung
   const items = points.filter(p => p.t != null).map(p => ({ p, yA: yOf(p.t), xA: axis + side * rAt(p.t) * Hd })).sort((a, b) => a.yA - b.yA);

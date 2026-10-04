@@ -346,16 +346,19 @@ export function rendern(s, { ss = 2 } = {}) {
   const { W, Hpx: Hh } = s;
   const data = new Uint8ClampedArray(W * Hh * 4);
   const maske = new Uint8Array(W * Hh);
+  const henkelMaske = new Uint8Array(W * Hh);
+  const tiefe = new Float32Array(W * Hh);
   const k = s.kamera;
   const rnd = rng(s.seed ^ 0x5bd1e995);
   for (let y = 0; y < Hh; y++) {
     for (let x = 0; x < W; x++) {
-      let acc = [0, 0, 0], objCount = 0;
+      let acc = [0, 0, 0], objCount = 0, henkelCount = 0, tSum = 0;
       for (let sy = 0; sy < ss; sy++) for (let sx = 0; sx < ss; sx++) {
         const u = (x + (sx + 0.5) / ss - k.cx) / k.f, v = (y + (sy + 0.5) / ss - k.cy) / k.f;
         const d = norm(add(add(k.fwd, mul(k.right, u)), mul(k.up, -v)));
         const hit = strahl(s, k.pos, d);
-        if (hit.obj) objCount++;
+        if (hit.obj) { objCount++; if (sdHenkel(s, hit.p) < sdGefaess(s, hit.p)) henkelCount++; }
+        tSum += Math.min(hit.t, 500);
         acc = add(acc, farbe(s, hit, d));
       }
       acc = mul(acc, 1 / (ss * ss));
@@ -366,9 +369,11 @@ export function rendern(s, { ss = 2 } = {}) {
       data[i + 2] = srgb(acc[2]) + nz();
       data[i + 3] = 255;
       maske[y * W + x] = objCount * 2 >= ss * ss ? 1 : 0;
+      henkelMaske[y * W + x] = henkelCount * 2 >= ss * ss ? 1 : 0;
+      tiefe[y * W + x] = tSum / (ss * ss);
     }
   }
-  return { width: W, height: Hh, data, maske };
+  return { width: W, height: Hh, data, maske, henkelMaske, tiefe };
 }
 
 // Punkt der Szene ins Bild projizieren

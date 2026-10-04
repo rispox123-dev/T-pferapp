@@ -1,6 +1,6 @@
 # Formerkennung: Prüfung an Testfotos
 
-Erzeugt mit `node tools/test/auswerten.mjs 96 --bericht` am 2026-10-03.
+Erzeugt mit `node tools/test/auswerten.mjs 96 --bericht` am 2026-10-04.
 
 Gerenderte Testfotos (`szene.mjs`) mit exakt bekannter Kontur: Formen aus allen Familien der Formen-Datenbank,
 glänzende und matte Glasuren (hell, dunkel, farbig), zweifarbig getauchte Stücke, unglasierte Füße, Henkel,
@@ -15,27 +15,27 @@ Stücke, die nicht in der Bildmitte stehen.
 
 | Verfahren | Kontur Mittel | Kontur Median | Höhe : Ø Mittel | Höhe : Ø Median |
 |---|---|---|---|---|
-| **Neu, geführt**, ruhiger Hintergrund | 1,9 % | 1,0 % | 5,8 % | 3,1 % |
-| **Neu, geführt**, mit Unordnung | 4,2 % | 1,2 % | 16,8 % | 3,0 % |
-| Neu, Galerie, ruhiger Hintergrund | 2,5 % | 1,7 % | 6,2 % | 3,8 % |
-| Neu, Galerie, mit Unordnung | 3,6 % | 1,9 % | 22,8 % | 4,1 % |
+| **Neu, geführt**, ruhiger Hintergrund | 1,7 % | 0,9 % | 5,4 % | 2,4 % |
+| **Neu, geführt**, mit Unordnung | 4,0 % | 1,0 % | 15,9 % | 2,6 % |
+| Neu, Galerie, ruhiger Hintergrund | 2,6 % | 1,9 % | 6,1 % | 4,3 % |
+| Neu, Galerie, mit Unordnung | 3,5 % | 1,9 % | 22,0 % | 4,2 % |
 | Bisherige Erkennung, ruhiger Hintergrund | 10,6 % | 3,9 % | 33,1 % | 8,5 % |
 | Bisherige Erkennung, mit Unordnung | 9,8 % | 4,9 % | 36,1 % | 9,0 % |
 
-Ausreißer (Konturfehler über 4 %): geführt 13 von 96 (ruhig) bzw. 12 von 96 (Unordnung);
-Galerie 19 bzw. 24. Die Mittelwerte werden von diesen wenigen Ausreißern bestimmt, die Mediane zeigen den Normalfall.
+Ausreißer (Konturfehler über 4 %): geführt 13 von 96 (ruhig) bzw. 13 von 96 (Unordnung);
+Galerie 20 bzw. 22. Die Mittelwerte werden von diesen wenigen Ausreißern bestimmt, die Mediane zeigen den Normalfall.
 
-Henkel erkannt (geführt, ruhig): 28 von 31, Fehlalarme 1; mit Unordnung: 29 von 31, Fehlalarme 0.
-Rechenzeit je Foto: 141 ms (Node.js, Analysegröße 400 px).
+Henkel erkannt (geführt, ruhig): 31 von 31, Fehlalarme 1; mit Unordnung: 31 von 31, Fehlalarme 1.
+Rechenzeit je Foto: 181 ms (Node.js, Analysegröße 400 px).
 
 ## Nach Art des Stücks (geführt, ruhiger Hintergrund)
 
 | Art | Fotos | Kontur Median | Höhe : Ø Median |
 |---|---|---|---|
-| Becher / Tassen | 52 | 1,1 % | 3,9 % |
-| Schüsseln / Schalen | 20 | 1,8 % | 4,9 % |
-| Vasen | 24 | 0,8 % | 1,6 % |
-| zweifarbig getaucht | 30 | 0,9 % | 2,5 % |
+| Becher / Tassen | 52 | 0,9 % | 2,2 % |
+| Schüsseln / Schalen | 20 | 1,5 % | 4,3 % |
+| Vasen | 24 | 0,6 % | 1,5 % |
+| zweifarbig getaucht | 30 | 0,7 % | 1,9 % |
 
 ## Grenzen
 

@@ -3,7 +3,7 @@ import { processImage, blobToDataUrl, dataUrlToBlob, brennweiteAusExif } from '.
 import { findPoints, abgleich, estimate, renderBlueprint, hashSeed, alteWerte, istAutoName } from './blueprint.js';
 import { analyze, loadForAnalysis, cropFromGuide, DEFAULT_SENS } from './erkennung.js';
 import { gefuehrteAufnahme, kameraVerfuegbar, GRUPPEN } from './kamera.js';
-import { masseAbfragen, stelleName } from './massband.js';
+import { masseAbfragen, massAbfragen, stelleName, wertText } from './massband.js';
 
 // ---------------------------------------------------------------------------
 // Fachliche Listen
@@ -99,8 +99,19 @@ function setHeader({ title, back = null, actions = '' }) {
 }
 
 const ICON_PLUS = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>';
-const ICON_GUIDE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M9.5 7.5h5M10 7.5c0 2-1.8 3-1.8 6a3.8 3.8 0 0 0 7.6 0c0-3-1.8-4-1.8-6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="2.5 2"/><path d="M12 5v14" stroke="currentColor" stroke-width="1" stroke-dasharray="1 2"/></svg>';
 const ICON_VOLLBILD = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+// Mit Bleistift gezeichnet (ohne Rand): Kamera zum Fotografieren, Bilderrahmen für die Galerie
+const ICON_KAMERA = `<svg class="bleistift" viewBox="0 0 36 36" aria-hidden="true">
+  <path d="M6.2 11.6C9.6 11.1 11 11.4 12.4 10.9L14.3 7.6C16.8 7.2 19.6 7.4 22.1 7.3L23.8 10.7C26.3 11 28.6 10.8 30.4 11.4C31.1 16.6 30.9 23.2 30.6 28.4C22.6 29.1 13.8 28.8 6.5 29.1C5.9 23.2 5.8 17.4 6.2 11.6Z"/>
+  <path d="M18.3 14.2C21.6 14 24.3 16.6 24.1 20.1S21.2 25.9 17.8 25.7 12.1 22.9 12.3 19.6 15.2 14.1 18.6 14.4"/>
+  <path d="M15.4 19.4C15.7 17.8 16.9 16.9 18.4 16.8M25.8 14.4C26.7 14.2 27.5 14.3 28.3 14.2M7.6 14.6C8.6 14.5 9.6 14.6 10.5 14.4" class="duenn"/>
+</svg>`;
+const ICON_RAHMEN = `<svg class="bleistift" viewBox="0 0 36 36" aria-hidden="true">
+  <path d="M5.6 7.4C13.4 6.8 22.4 7.1 30.6 6.7C31 14.6 30.8 22.6 31.2 30.6C22.9 31.1 14.1 30.7 5.9 31.2C5.5 23.2 5.8 15.3 5.6 7.4Z"/>
+  <path d="M9.8 11.4C15.3 11.1 21 11.3 26.6 11C26.8 16 26.7 21 26.9 26.1C21.2 26.4 15.6 26.2 10 26.5C9.8 21.4 9.9 16.4 9.8 11.4Z"/>
+  <path d="M5.8 7.5L9.8 11.4M30.5 6.8L26.6 11M31.1 30.5L26.9 26.1M6 31.1L10 26.5M11.6 7.1L18.1 2.6L24.8 6.9" class="duenn"/>
+  <path d="M10.6 23.8C12.7 21.2 14.5 19.2 16.6 21.6C18.3 19.1 20.4 17 22.6 19.4C24 20.9 25.1 22.3 26.3 23.6M21.7 14.6C21.6 13.7 22.4 13.1 23.2 13.3C24.1 13.5 24.2 14.6 23.6 15.1C23 15.7 21.9 15.5 21.7 14.6Z" class="duenn"/>
+</svg>`;
 const ICON_CAMERA = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-2.5h6L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>';
 
 // ---------------------------------------------------------------------------
@@ -186,12 +197,60 @@ document.addEventListener('click', e => {
 // Formular-Hilfen
 // ---------------------------------------------------------------------------
 
-function field(label, name, value, { type = 'text', unit = '', placeholder = '', list = '' } = {}) {
-  const numeric = type === 'number';
-  const input = `<input name="${name}" type="${type}" ${numeric ? 'inputmode="decimal" step="any" min="0"' : ''}
-    value="${esc(value)}" placeholder="${esc(placeholder)}" ${list ? `list="${list}"` : ''}>`;
-  return `<label class="field"><span>${esc(label)}</span>${unit ? `<span class="unit-input">${input}<em>${esc(unit)}</em></span>` : input}</label>`;
+function field(label, name, value, { type = 'text', placeholder = '', list = '' } = {}) {
+  return `<label class="field"><span>${esc(label)}</span><input name="${name}" type="${type}"
+    value="${esc(value)}" placeholder="${esc(placeholder)}" ${list ? `list="${list}"` : ''}></label>`;
 }
+
+// Zahlen werden nicht getippt, sondern mit dem Maßband eingestellt: Antippen öffnet den Zettel
+// mit allen Werten derselben Gruppe (z. B. alle Maße nach dem Brand). Der Wert selbst steht in
+// einem versteckten Feld, damit das Formular ihn wie jedes andere Feld liest.
+//   skala: Schlüssel aus SKALEN (massband.js); gruppe/titel: Werte, die zusammen auf einem Zettel
+//   stehen, und dessen Überschrift; skizze: Messlinie in der Topfskizze; start: Startwert
+function wertFeld(label, name, value, skala, { gruppe = name, titel = label, skizze = '', start = null } = {}) {
+  return `<div class="field wert-feld"><span>${esc(label)}</span>
+    <button type="button" class="wert-knopf" data-wert="${esc(name)}" data-skala="${skala}" data-gruppe="${esc(gruppe)}"
+      data-titel="${esc(titel)}" data-label="${esc(label)}"${skizze ? ` data-skizze="${skizze}"` : ''}${start != null ? ` data-start="${start}"` : ''}>${wertAnzeige(value, skala)}</button>
+    <input type="hidden" name="${esc(name)}" value="${isNum(value) ? esc(value) : ''}">
+  </div>`;
+}
+const wertAnzeige = (v, skala) => (isNum(v) ? esc(wertText(v, skala)) : '<span class="wert-leer">–</span>');
+const wertEingabe = knopf => knopf.closest('.wert-feld').querySelector('input[type="hidden"]');
+
+// Wert ins versteckte Feld schreiben und anzeigen (null: leer)
+function wertSetzen(eingabe, v) {
+  const knopf = eingabe.closest('.wert-feld').querySelector('[data-wert]');
+  eingabe.value = isNum(v) ? String(v) : '';
+  knopf.innerHTML = wertAnzeige(v, knopf.dataset.skala);
+  eingabe.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+// Zettel mit dem Maßband für die Gruppe des angetippten Werts (innerhalb einer Glasurschicht
+// bzw. des Formulars)
+async function wertEinstellen(knopf) {
+  const bereich = knopf.closest('.layer, form') || $app;
+  const knoepfe = [...bereich.querySelectorAll('[data-wert]')].filter(b => b.dataset.gruppe === knopf.dataset.gruppe);
+  const res = await massAbfragen({
+    titel: knopf.dataset.titel,
+    felder: knoepfe.map(b => ({
+      f: b.dataset.wert,
+      name: b.dataset.label,
+      wert: isNum(wertEingabe(b).value) ? Number(wertEingabe(b).value) : null,
+      skala: b.dataset.skala,
+      skizze: b.dataset.skizze,
+      start: isNum(b.dataset.start) ? Number(b.dataset.start) : undefined,
+      leeren: true,
+    })),
+    waehlen: knopf.dataset.wert,
+  });
+  if (!res) return;
+  for (const b of knoepfe) wertSetzen(wertEingabe(b), res.werte[b.dataset.wert]);
+}
+// ein eigener Abfrage-Weg (z. B. der Zettel mit den Stellen) verhindert das mit preventDefault
+$app.addEventListener('click', e => {
+  const knopf = e.target.closest('[data-wert]');
+  if (knopf && !e.defaultPrevented) wertEinstellen(knopf);
+});
 
 function selectField(label, name, value, options, { empty = '– bitte wählen –' } = {}) {
   const opts = options.map(o => (typeof o === 'string' ? { value: o, label: o } : o));
@@ -253,14 +312,17 @@ async function handleFiles(input, onId) {
   }
 }
 
+// Zwei gezeichnete Knöpfe: „Foto“ (geführte Aufnahme für die Blaupause, ohne Kamerazugriff im
+// Browser die Kamera des Handys) und „Galerie“
+const fotoKnoepfe = foto => `<button type="button" class="foto-knopf foto" data-pick="${foto}" aria-label="${foto === 'guided' ? 'Foto für die Blaupause aufnehmen' : 'Foto aufnehmen'}">${ICON_KAMERA}<span>Foto</span></button>
+  <button type="button" class="foto-knopf galerie" data-pick="lib" aria-label="Foto aus der Galerie">${ICON_RAHMEN}<span>Galerie</span></button>`;
+
 // Mehrere Fotos (Werkstück); onAdded: nach jedem neu hinzugefügten Foto (bzw. jeder Auswahl)
 function mountMultiPhoto(container, ids, session, onAdded) {
   const render = () => {
     container.innerHTML = `<div class="photo-picker">
       ${ids.map(id => `<div class="pp-item">${thumb(id, { zoom: true })}<button type="button" class="pp-remove" data-id="${id}" aria-label="Foto entfernen">×</button></div>`).join('')}
-      ${kameraVerfuegbar() ? `<button type="button" class="pp-add pp-guided" data-pick="guided">${ICON_GUIDE}Foto für<br>Blaupause</button>` : ''}
-      <button type="button" class="pp-add" data-pick="cam">${ICON_CAMERA}Foto<br>aufnehmen</button>
-      <button type="button" class="pp-add" data-pick="lib">${ICON_PLUS}Aus<br>Galerie</button>
+      ${fotoKnoepfe(kameraVerfuegbar() ? 'guided' : 'cam')}
       ${fileInputs('pp', true)}
     </div>`;
     hydratePhotos(container);
@@ -299,9 +361,8 @@ function mountSinglePhoto(container, state, key, session, placeholder) {
     const id = state[key];
     container.innerHTML = `<div class="single-photo">
       ${thumb(id, { placeholder, zoom: true })}
-      <div class="btn-row">
-        <button type="button" class="btn small" data-pick="cam">${ICON_CAMERA.replace('<svg', '<svg width="20" height="20"')} ${id ? 'Neu aufnehmen' : 'Foto aufnehmen'}</button>
-        <button type="button" class="btn small" data-pick="lib">Aus Galerie</button>
+      <div class="foto-knoepfe">
+        ${fotoKnoepfe('cam')}
         ${id ? '<button type="button" class="btn small danger" data-remove>Entfernen</button>' : ''}
       </div>
       ${fileInputs('sp', false)}
@@ -325,12 +386,14 @@ function mountSinglePhoto(container, state, key, session, placeholder) {
   render();
 }
 
-// Einfache Wiederhol-Zeilen (Name + Wert)
-function mountRepeat(container, rows, { labelA, labelB, typeB = 'text', addLabel, onChange }) {
+// Einfache Wiederhol-Zeilen (Name + Wert); skalaB: Wert als Zahl mit dem Maßband einstellen
+function mountRepeat(container, rows, { labelA, labelB, skalaB = '', addLabel, onChange }) {
   const render = () => {
     container.innerHTML = rows.map((r, i) => `<div class="repeat-row" data-i="${i}">
         <input data-k="a" value="${esc(r.a)}" placeholder="${esc(labelA)}" aria-label="${esc(labelA)}">
-        <input data-k="b" value="${esc(r.b)}" placeholder="${esc(labelB)}" aria-label="${esc(labelB)}" ${typeB === 'number' ? 'type="number" inputmode="decimal" step="any" min="0"' : ''}>
+        ${skalaB
+          ? `<button type="button" class="wert-knopf repeat-wert" aria-label="${esc(labelB)}">${isNum(r.b) ? esc(wertText(r.b, skalaB)) : `<span class="wert-leer">${esc(labelB)}</span>`}</button>`
+          : `<input data-k="b" value="${esc(r.b)}" placeholder="${esc(labelB)}" aria-label="${esc(labelB)}">`}
         <button type="button" class="remove-btn" aria-label="Zeile entfernen">×</button>
       </div>`).join('') + `<button type="button" class="btn small" data-add>${ICON_PLUS.replace('<svg', '<svg width="18" height="18"')} ${esc(addLabel)}</button>`;
     onChange?.();
@@ -341,7 +404,20 @@ function mountRepeat(container, rows, { labelA, labelB, typeB = 'text', addLabel
     rows[row.dataset.i][e.target.dataset.k] = e.target.value;
     onChange?.();
   });
-  container.addEventListener('click', e => {
+  container.addEventListener('click', async e => {
+    const wert = e.target.closest('.repeat-wert');
+    if (wert) {
+      const i = wert.closest('.repeat-row').dataset.i;
+      const res = await massAbfragen({
+        titel: String(rows[i].a).trim() || labelB,
+        felder: [{ f: 'b', name: labelB, wert: isNum(rows[i].b) ? Number(rows[i].b) : null, skala: skalaB, leeren: true }],
+        waehlen: 'b',
+      });
+      if (!res) return;
+      rows[i].b = res.werte.b ?? '';
+      render();
+      return;
+    }
     if (e.target.closest('[data-add]')) { rows.push({ a: '', b: '' }); render(); container.querySelector('.repeat-row:last-of-type input')?.focus(); }
     const rm = e.target.closest('.remove-btn');
     if (rm) { rows.splice(rm.closest('.repeat-row').dataset.i, 1); render(); }
@@ -355,9 +431,53 @@ function mountRepeat(container, rows, { labelA, labelB, typeB = 'text', addLabel
 
 let pieceSearch = '';
 
+// Übersicht als Fotos oder als Skizzenbuch (Blaupausen ohne Maße, mit dem Namen des Stücks)
+const ANSICHT_KEY = 'werkstueckAnsicht';
+let pieceView = (() => { try { return localStorage.getItem(ANSICHT_KEY) === 'skizzen' ? 'skizzen' : 'fotos'; } catch { return 'fotos'; } })();
+
+// Mit Bleistift gezeichnet: ein kleines Skizzenbuch mit Stift (zu den Skizzen wechseln) …
+const ICON_SKIZZENBUCH = `<svg viewBox="0 0 36 36" aria-hidden="true">
+  <path d="M6.4 8.3C11.6 7.9 17.5 8.1 22.9 7.8C23.4 14.5 23.1 22.4 23.5 29.6C17.9 30 12.2 29.7 6.9 30.1C6.6 22.8 6.9 15.4 6.4 8.3Z"/>
+  <path d="M9.6 9.9C9.5 7.8 8.6 6.1 10 5.4S11.6 7.5 11.4 9.8M13.9 9.7C13.8 7.6 12.9 6 14.3 5.2S15.9 7.3 15.7 9.6M18.2 9.6C18.1 7.5 17.2 5.8 18.6 5.1S20.2 7.2 20 9.5" class="duenn"/>
+  <path d="M12.4 25.2C11.6 22.7 10.5 20.6 11.7 18.3C12.3 17 12.6 15.7 12.3 14.4M17 25.1C17.9 22.6 18.9 20.5 17.8 18.2C17.2 16.9 16.9 15.7 17.2 14.3M12.4 14.3C13.9 13.8 15.6 13.8 17.2 14.3M12.5 25.3C14 25.7 15.6 25.7 17 25.2" class="duenn"/>
+  <path d="M33.1 9.6L22.4 27.7L19.6 29.6L20 26.3L30.6 8.1C31.2 7.2 32 7.1 32.8 7.6C33.6 8.1 33.6 8.8 33.1 9.6ZM20 26.3L22.4 27.7M29.2 10.5L31.7 12"/>
+</svg>`;
+// … und ein Polaroid (zurück zu den Fotos)
+const ICON_POLAROID = `<svg viewBox="0 0 36 36" aria-hidden="true">
+  <path d="M7.2 6.1C14.1 5.4 21.6 5.8 28.4 5.3C29.1 13.6 29.4 22.9 29.9 31.2C22.6 31.6 14.9 31.2 8.1 31.9C7.6 23.3 7.6 14.6 7.2 6.1Z"/>
+  <path d="M10.4 9.1C15.3 8.8 20.5 8.9 25.5 8.6C25.8 13.4 25.9 18.3 26.2 23.2C21.2 23.5 16.1 23.4 11.1 23.8C10.8 18.9 10.8 13.9 10.4 9.1Z"/>
+  <path d="M11.5 20.3C13.6 17.6 15.2 15.4 17.2 17.8C18.7 15.6 20.4 13.4 22.3 15.6C23.4 16.9 24.4 18.3 25.6 19.6" class="duenn"/>
+  <path d="M21.4 12.4C21.3 11.4 22.1 10.8 22.9 11C23.8 11.2 24 12.3 23.4 12.9C22.8 13.5 21.6 13.3 21.4 12.4Z" class="duenn"/>
+  <path d="M13.2 27.6C15.6 27 18.4 27.9 20.8 27.2" class="duenn"/>
+</svg>`;
+
+const ansichtButton = () => (pieceView === 'skizzen'
+  ? `<button type="button" class="ansicht-btn" id="ansicht" aria-label="Fotos zeigen" title="Fotos zeigen">${ICON_POLAROID}</button>`
+  : `<button type="button" class="ansicht-btn" id="ansicht" aria-label="Skizzen zeigen" title="Skizzen zeigen">${ICON_SKIZZENBUCH}</button>`);
+
+// Platzhalter im Skizzenbuch, wenn es noch keine Blaupause gibt: eine angedeutete Form
+const SKIZZE_LEER = `<svg class="skizze-leer" viewBox="0 0 100 100" aria-hidden="true">
+  <path d="M37 26C33 38 26 46 28 58C30 70 36 76 38 80M63 26C67 38 74 46 72 58C70 70 64 76 62 80M37 26C45 24.6 55 24.6 63 26M38 80C45 81.6 55 81.6 62 80"/>
+</svg>`;
+
+const skizzenCache = new Map();
+function pieceSketch(p) {
+  if (!p.blueprint?.profile) return SKIZZE_LEER;
+  const key = `${p.id}:${p.updatedAt || p.createdAt || ''}`;
+  if (!skizzenCache.has(key)) {
+    try {
+      skizzenCache.set(key, renderBlueprint(bpMitStellen(p), { ...bpData(p), interactive: false, skizze: true, seed: hashSeed(p.id || p.name) }));
+    } catch (err) {
+      console.warn('Skizze:', err.message);
+      skizzenCache.set(key, SKIZZE_LEER);
+    }
+  }
+  return skizzenCache.get(key);
+}
+
 async function viewPieces() {
-  setHeader({ title: 'Werkstücke' });
   const pieces = (await db.getAll('pieces')).sort(byDateDesc);
+  setHeader({ title: 'Töpfern', actions: pieces.length ? ansichtButton() : '' });
 
   if (!pieces.length) {
     $app.innerHTML = `<div class="empty">
@@ -377,6 +497,15 @@ async function viewPieces() {
   const renderGrid = () => {
     const q = pieceSearch.toLowerCase();
     const list = pieces.filter(p => !q || [p.name, p.tonsorte, p.serie, p.technik, p.notizen].join(' ').toLowerCase().includes(q));
+    const skizzen = pieceView === 'skizzen';
+    grid.classList.toggle('skizzenbuch', skizzen);
+    if (skizzen) {
+      grid.innerHTML = list.length ? list.map(p => `<a class="tile skizze-tile" href="#/werkstueck/${p.id}">
+          <span class="skizze-bild">${pieceSketch(p)}</span>
+          <span class="skizze-name">${esc(p.name || 'Ohne Namen')}</span>
+        </a>`).join('') : '<p class="muted">Nichts gefunden.</p>';
+      return;
+    }
     grid.innerHTML = list.length ? list.map(p => `<a class="tile" href="#/werkstueck/${p.id}">
         ${thumb(p.photos?.[0])}
         <div class="tile-body">
@@ -387,6 +516,15 @@ async function viewPieces() {
     hydratePhotos(grid);
   };
   $app.querySelector('.search').addEventListener('input', e => { pieceSearch = e.target.value; renderGrid(); });
+  // zwischen Fotos und Skizzen wechseln; der Knopf zeigt jeweils, wohin es geht
+  const umschalten = () => {
+    pieceView = pieceView === 'skizzen' ? 'fotos' : 'skizzen';
+    try { localStorage.setItem(ANSICHT_KEY, pieceView); } catch { /* gilt dann nur bis zum Neuladen */ }
+    $actions.innerHTML = ansichtButton();
+    $actions.querySelector('#ansicht').onclick = umschalten;
+    renderGrid();
+  };
+  $actions.querySelector('#ansicht').onclick = umschalten;
   renderGrid();
 }
 
@@ -533,7 +671,7 @@ async function viewPieceForm(id, params) {
     <div class="card">
       <h2>Ton</h2>
       <div class="fields-2">
-        ${field('Tonmenge', 'tonmenge', p.tonmenge, { type: 'number', unit: 'g' })}
+        ${wertFeld('Tonmenge', 'tonmenge', p.tonmenge, 'g')}
         ${field('Tonsorte', 'tonsorte', p.tonsorte, { placeholder: 'z. B. Steinzeug weiß', list: 'tonsorten' })}
       </div>
       <datalist id="tonsorten">${tonsorten.map(t => `<option value="${esc(t)}">`).join('')}</datalist>
@@ -541,8 +679,11 @@ async function viewPieceForm(id, params) {
 
     <div class="card">
       <h2>Maße nass / frisch gedreht</h2>
+      <div class="fields-2" id="nass-grund">
+        ${MASSE.map(([k, label]) => wertFeld(label, `nass.${k}`, nass[k], 'cm', { gruppe: 'nass', titel: 'Maße nass / frisch', skizze: k })).join('')}
+      </div>
       <div class="fields-2">
-        ${[...MASSE, ...MASSE_NUR_NASS].map(([k, label, unit]) => field(label, `nass.${k}`, nass[k], { type: 'number', unit })).join('')}
+        ${MASSE_NUR_NASS.map(([k, label]) => wertFeld(label, `nass.${k}`, nass[k], 'mm', { gruppe: 'staerke', titel: 'Wand- und Bodenstärke' })).join('')}
       </div>
       <div id="stellen"></div>
       <div class="btn-row" style="margin:8px 0 2px"><button type="button" class="btn small" id="zettel">Zettel öffnen: Maße &amp; Stellen</button></div>
@@ -552,8 +693,8 @@ async function viewPieceForm(id, params) {
       <h2>Maße nach dem Brand</h2>
       <p class="hint" style="margin-top:0">Optional – daraus berechnet die App die Schwindung deines Tons.</p>
       <div class="fields-2">
-        ${MASSE.map(([k, label, unit]) => field(label, `fertig.${k}`, fertig[k], { type: 'number', unit })).join('')}
-        ${field('Gewicht fertig', 'gewichtFertig', p.gewichtFertig, { type: 'number', unit: 'g' })}
+        ${MASSE.map(([k, label]) => wertFeld(label, `fertig.${k}`, fertig[k], 'cm', { gruppe: 'fertig', titel: 'Maße nach dem Brand', skizze: k })).join('')}
+        ${wertFeld('Gewicht fertig', 'gewichtFertig', p.gewichtFertig, 'g')}
       </div>
     </div>
 
@@ -579,16 +720,23 @@ async function viewPieceForm(id, params) {
   const zeigeStellen = () => { stellenEl.innerHTML = stellenListe(stellen); };
   zeigeStellen();
   // Grundmaße und eigene Stellen auf dem Zettel; Ergebnis direkt ins Formular
-  const zettelFormular = async () => {
-    const res = await masseAbfragen(Object.fromEntries(MASSE.map(([k]) => [k, numVal(form, `nass.${k}`)])), stellen);
+  const zettelFormular = async waehlen => {
+    const res = await masseAbfragen(Object.fromEntries(MASSE.map(([k]) => [k, numVal(form, `nass.${k}`)])), stellen, { waehlen });
     if (!res) return;
-    for (const [k, v] of Object.entries(res.werte)) form.elements[`nass.${k}`].value = v;
+    for (const [k, v] of Object.entries(res.werte)) wertSetzen(form.elements[`nass.${k}`], v);
     stellen = res.stellen;
     zeigeStellen();
   };
-  $app.querySelector('#zettel').onclick = zettelFormular;
+  $app.querySelector('#zettel').onclick = () => zettelFormular();
+  // die Grundmaße nass stehen mit den eigenen Stellen auf einem Zettel
+  $app.querySelector('#nass-grund').addEventListener('click', e => {
+    const knopf = e.target.closest('[data-wert]');
+    if (!knopf) return;
+    e.preventDefault();
+    zettelFormular(knopf.dataset.wert.slice('nass.'.length));
+  });
   // Nach dem Foto die Maße abfragen – damit wird die Blaupause am genauesten
-  mountMultiPhoto($app.querySelector('#photos'), photos, session, zettelFormular);
+  mountMultiPhoto($app.querySelector('#photos'), photos, session, () => zettelFormular());
   mountRepeat($app.querySelector('#extra'), extra, { labelA: 'Bezeichnung', labelB: 'Wert', addLabel: 'Angabe hinzufügen' });
 
   $app.querySelector('#cancel').onclick = () => $back.click();
@@ -767,34 +915,8 @@ async function createBlueprint(photoId, prev) {
   return makeBlueprint(photoId, crop, sens, result, prev, brush, gruppe, punkt);
 }
 
-function measureDialog({ title, isHeight, value, est, showPos, pos, posEst, label, removeText }) {
-  return new Promise(resolve => {
-    const dlg = document.createElement('dialog');
-    dlg.className = 'sheet';
-    dlg.innerHTML = `<form method="dialog">
-      <h2>${esc(title)}</h2>
-      ${label !== undefined ? field('Bezeichnung', 'label', label, { placeholder: 'z. B. Ø untere Rille' }) : ''}
-      ${field(isHeight ? 'Höhe gesamt' : 'Durchmesser', 'value', value ?? '', { type: 'number', unit: 'cm', placeholder: est ? `≈ ${fmt(est)}` : '' })}
-      ${showPos ? field('Auf welcher Höhe? (vom Boden gemessen)', 'pos', pos ?? '', { type: 'number', unit: 'cm', placeholder: posEst ? `≈ ${fmt(posEst)}` : '' }) : ''}
-      <p class="hint">${est && value == null ? `Aus dem Foto geschätzt: ≈ ${fmt(est)} cm. ` : ''}Leeres Feld löscht den Wert.</p>
-      <div class="sheet-buttons"><button class="btn primary" value="ok">Speichern</button><button class="btn" value="cancel">Abbrechen</button></div>
-      ${removeText ? `<button class="btn danger block" value="remove" style="margin-bottom:12px">${esc(removeText)}</button>` : ''}
-    </form>`;
-    document.body.append(dlg);
-    dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close('cancel'); });
-    dlg.addEventListener('close', () => {
-      const f = dlg.querySelector('form');
-      const action = dlg.returnValue;
-      const res = action === 'ok' || action === 'remove'
-        ? { action, value: numVal(f, 'value'), pos: showPos ? numVal(f, 'pos') : null, label: label !== undefined ? strVal(f, 'label') : undefined }
-        : null;
-      dlg.remove();
-      resolve(res);
-    });
-    dlg.showModal();
-    dlg.querySelector('input').focus();
-  });
-}
+// Wo die Stelle in der kleinen Skizze auf dem Zettel liegt (Stellen dazwischen: Ø auf ihrer Höhe)
+const SKIZZE_MASS = { hoehe: 'hoehe', rand: 'dOben', fuss: 'dBoden' };
 
 // Blaupause anzeigen; Maße lassen sich durch Antippen eintragen,
 // eigene Stellen durch Antippen der Form hinzufügen
@@ -816,32 +938,37 @@ function mountBlueprint(container, p, onSaved) {
     if (!pt) return;
     const interior = pt.t > 0 && pt.t < 1;
     const stelle = (p.stellen || []).find(s => stelleKey(s) === key);
-    const res = await measureDialog({
-      title: pt.label, isHeight: key === 'hoehe', value: values[key], est: est.value(pt),
-      showPos: interior, pos: pos[key], posEst: est.pos(pt),
-      label: key === 'hoehe' || stelle ? undefined : pt.label,
-      removeText: key === 'hoehe' ? '' : stelle || pt.custom ? 'Stelle löschen' : 'Stelle ausblenden',
+    const res = await massAbfragen({
+      titel: pt.label,
+      felder: [
+        { f: 'wert', name: key === 'hoehe' ? 'Höhe gesamt' : 'Durchmesser', wert: values[key], schaetzung: est.value(pt), skizze: SKIZZE_MASS[key] || 'd', leeren: !stelle },
+        ...(interior ? [{ f: 'pos', name: 'Höhe vom Boden', wert: pos[key], schaetzung: est.pos(pt), skizze: 'h', leeren: !stelle }] : []),
+      ],
+      hoehe: values.hoehe ?? est.scale,
+      bezeichnung: key === 'hoehe' || stelle ? undefined : pt.label,
+      entfernen: key === 'hoehe' ? '' : stelle || pt.custom ? 'Stelle löschen' : 'Stelle ausblenden',
     });
     if (!res) return;
+    const { wert, pos: lage } = res.werte;
     if (stelle) {
       // eigene Stelle vom Zettel: Ø und Höhe gehören zum Werkstück
-      if (res.action === 'remove') p.stellen = p.stellen.filter(s => s !== stelle);
+      if (res.aktion === 'entfernen') p.stellen = p.stellen.filter(s => s !== stelle);
       else {
-        if (res.value != null) stelle.d = res.value;
-        if (res.pos != null) stelle.h = res.pos;
+        if (wert != null) stelle.d = wert;
+        if (lage != null) stelle.h = lage;
       }
       return save();
     }
-    if (res.action === 'remove') {
+    if (res.aktion === 'entfernen') {
       if (pt.custom) bp().custom = (bp().custom || []).filter(c => c.key !== key);
       else bp().hidden = [...(bp().hidden || []), key];
       return save();
     }
-    if (BP_FIELDS[key]) p.nass = { ...(p.nass || {}), [BP_FIELDS[key]]: res.value };
-    else bp().values = { ...bp().values, [key]: res.value };
-    if (interior) bp().pos = { ...bp().pos, [key]: res.pos };
+    if (BP_FIELDS[key]) p.nass = { ...(p.nass || {}), [BP_FIELDS[key]]: wert };
+    else bp().values = { ...bp().values, [key]: wert };
+    if (interior) bp().pos = { ...bp().pos, [key]: lage };
     // nur einen wirklich eigenen Namen merken; der automatische folgt sonst den Begriffen der App
-    if (res.label !== undefined) bp().labels = { ...(bp().labels || {}), [key]: res.label && (pt.custom || !istAutoName(res.label)) ? res.label : undefined };
+    if (res.bezeichnung !== undefined) bp().labels = { ...(bp().labels || {}), [key]: res.bezeichnung && (pt.custom || !istAutoName(res.bezeichnung)) ? res.bezeichnung : undefined };
     return save();
   };
 
@@ -850,16 +977,22 @@ function mountBlueprint(container, p, onSaved) {
     const probe = { key: '_neu', t, m: 0 };
     const est = abgleich(bpMitStellen(p), values, pos);
     probe.m = 2 * est.profile[Math.round(t * (est.profile.length - 1))];
-    const res = await measureDialog({
-      title: 'Neue Stelle', value: null, est: est.value(probe), showPos: true, pos: null, posEst: est.pos(probe), label: 'Ø Stelle',
+    const res = await massAbfragen({
+      titel: 'Neue Stelle',
+      felder: [
+        { f: 'wert', name: 'Durchmesser', wert: null, schaetzung: est.value(probe), skizze: 'd', leeren: true },
+        { f: 'pos', name: 'Höhe vom Boden', wert: null, schaetzung: est.pos(probe), skizze: 'h', leeren: true },
+      ],
+      hoehe: values.hoehe ?? est.scale,
+      bezeichnung: 'Ø Stelle',
     });
-    if (!res || res.action !== 'ok') return;
+    if (!res || res.aktion !== 'ok') return;
     const key = `eigene-${Date.now().toString(36)}`;
     // Lage wie im Foto merken (die Zeichnung kann an die Maße angeglichen sein)
     bp().custom = [...(bp().custom || []), { key, t: Math.round(est.tFoto(t) * 1000) / 1000 }];
-    bp().labels = { ...(bp().labels || {}), [key]: res.label || 'Ø Stelle' };
-    bp().values = { ...bp().values, [key]: res.value };
-    bp().pos = { ...bp().pos, [key]: res.pos };
+    bp().labels = { ...(bp().labels || {}), [key]: res.bezeichnung || 'Ø Stelle' };
+    bp().values = { ...bp().values, [key]: res.werte.wert };
+    bp().pos = { ...bp().pos, [key]: res.werte.pos };
     return save();
   };
 
@@ -946,7 +1079,7 @@ async function viewBlueprintEditor(id) {
   $app.innerHTML = `
     <div class="info-box"><p>Orange ist der erkannte Umriss, rot der Henkel, die gestrichelte Linie die Mittellinie. Die besser belichtete Seite (<strong>Leitseite</strong>) gibt die Form vor; blau markierte Stellen hat die App aus ihrem Formwissen ergänzt. Hat sie ein anderes Objekt erwischt, <strong>tippe auf dein Stück</strong>. Fehlt der Henkel oder ein Teil davon, male ihn mit <strong>Henkel</strong> nach – der Körper bleibt dabei, wie er ist. Fehlt am Körper etwas, nimm <strong>Hinzufügen</strong>; Schatten nimmst du mit <strong>Entfernen</strong> weg. Zum Malen öffnet sich das Foto im Vollbild: <strong>mit zwei Fingern zoomen</strong> und verschieben.</p></div>
     <div class="bp-choice">${p.photos.map(ph => `<button type="button" data-photo-id="${ph}" class="${ph === st.photoId ? 'active' : ''}" aria-label="Dieses Foto verwenden">${thumb(ph)}</button>`).join('')}
-      ${kameraVerfuegbar() ? `<button type="button" class="bp-neu" id="bp-foto" aria-label="Neues Foto für die Blaupause aufnehmen">${ICON_GUIDE}<span>Neues Foto</span></button>` : ''}</div>
+      ${kameraVerfuegbar() ? `<button type="button" class="bp-neu foto-knopf foto" id="bp-foto" aria-label="Neues Foto für die Blaupause aufnehmen">${ICON_KAMERA}<span>Foto</span></button>` : ''}</div>
     <label class="field"><span>Art des Stücks</span><select id="bp-gruppe">
       <option value="">Automatisch erkennen</option>
       ${GRUPPEN.map(g => `<option value="${g.key}" ${st.gruppe === g.key ? 'selected' : ''}>${esc(g.label)}</option>`).join('')}
@@ -1566,10 +1699,8 @@ function layerHtml(l, i, glazes) {
     </div>
     ${selectField('Auftrag', 'art', l.art || 'Tauchen', AUFTRAGSARTEN, { empty: null })}
     <div class="fields-2">
-      ${field('Tauchdauer', 'dauer', l.dauer, { type: 'number', unit: 'Sek.' })}
-      ${field('Wiederholungen', 'wdh', l.wdh ?? 1, { type: 'number', unit: '×' })}
-      ${field('Pause dazwischen', 'pause', l.pause, { type: 'number', unit: 'Sek.' })}
-      ${field('Litergewicht', 'litergewicht', l.litergewicht, { type: 'number', unit: 'g/l' })}
+      ${[['Tauchdauer', 'dauer', l.dauer, 'sek'], ['Wiederholungen', 'wdh', l.wdh ?? 1, 'mal'], ['Pause dazwischen', 'pause', l.pause, 'sek', 10], ['Litergewicht', 'litergewicht', l.litergewicht, 'gl']]
+        .map(([label, name, v, skala, start]) => wertFeld(label, name, v, skala, { gruppe: 'lage', titel: `${i + 1}. Glasurschicht`, start })).join('')}
     </div>
   </div>`;
 }
@@ -1648,9 +1779,9 @@ async function viewFiringForm(id, params) {
       <h2>Brand</h2>
       <div class="fields-2">
         ${field('Gebrannt am', 'brand.datum', b.datum, { type: 'date' })}
-        ${field('Temperatur', 'brand.temperatur', b.temperatur, { type: 'number', unit: '°C' })}
+        ${wertFeld('Temperatur', 'brand.temperatur', b.temperatur, 'grad', { gruppe: 'brand', titel: 'Brand' })}
         ${field('Kegel', 'brand.kegel', b.kegel, { placeholder: 'z. B. 6' })}
-        ${field('Haltezeit', 'brand.haltezeit', b.haltezeit, { type: 'number', unit: 'min' })}
+        ${wertFeld('Haltezeit', 'brand.haltezeit', b.haltezeit, 'min', { gruppe: 'brand', titel: 'Brand' })}
       </div>
       ${field('Ofen / Programm', 'brand.ofen', b.ofen, { placeholder: 'z. B. Nabertherm, Programm 4' })}
       ${field('Platz im Ofen', 'brand.position', b.position, { placeholder: 'z. B. oben links' })}
@@ -1678,7 +1809,7 @@ async function viewFiringForm(id, params) {
       layer.querySelector('.free-name').hidden = e.target.value !== '__frei';
       const g = glazes.find(x => x.id === e.target.value);
       const lg = layer.querySelector('[name="litergewicht"]');
-      if (g && isNum(g.litergewicht) && !lg.value) lg.value = g.litergewicht;
+      if (g && isNum(g.litergewicht) && !lg.value) wertSetzen(lg, g.litergewicht);
     }
   });
   layersEl.addEventListener('click', e => {
@@ -1860,7 +1991,7 @@ async function viewGlazeForm(id) {
       ${field('Beschreibung', 'beschreibung', g.beschreibung, { placeholder: 'z. B. glänzend, transparent-grün' })}
       <div class="fields-2">
         ${field('Brennbereich', 'brennbereich', g.brennbereich, { placeholder: 'z. B. 1220–1250 °C' })}
-        ${field('Litergewicht', 'litergewicht', g.litergewicht, { type: 'number', unit: 'g/l' })}
+        ${wertFeld('Litergewicht', 'litergewicht', g.litergewicht, 'gl')}
       </div>
       <p class="hint">Das Litergewicht (Gewicht von 1 Liter Glasurschlicker) beeinflusst stark, wie dick die Glasur beim Tauchen aufträgt.</p>
       ${field('Angesetzt am', 'angesetzt', g.angesetzt, { type: 'date' })}
@@ -1883,7 +2014,7 @@ async function viewGlazeForm(id) {
 
   const summeEl = $app.querySelector('#summe');
   mountRepeat($app.querySelector('#rezept'), rezept, {
-    labelA: 'Rohstoff', labelB: 'Anteil', typeB: 'number', addLabel: 'Rohstoff hinzufügen',
+    labelA: 'Rohstoff', labelB: 'Anteil', skalaB: 'anteil', addLabel: 'Rohstoff hinzufügen',
     onChange: () => {
       const s = rezept.reduce((a, r) => a + (isNum(String(r.b).replace(',', '.')) ? Number(String(r.b).replace(',', '.')) : 0), 0);
       summeEl.textContent = s ? `Summe: ${fmt(s, 2)}` : '';
@@ -2077,6 +2208,61 @@ const ROUTES = [
 
 let routeToken = 0;
 
+// ---------------------------------------------------------------------------
+// Umblättern: Wer unten in der Tableiste wechselt, blättert wie in einem Skizzenbuch um.
+// Die alte Seite wird als Blatt über die neue gelegt und dreht sich um die Bindung weg –
+// vorwärts (Töpfern → Glasieren → Glasuren → Mehr) nach links, zurück nach rechts.
+// ---------------------------------------------------------------------------
+
+const TAB_FOLGE = ['werkstuecke', 'glasieren', 'glasuren', 'mehr'];
+let blatt = null; // die alte Seite, die gleich umgeblättert wird
+let blattNotfall = 0;
+
+function blattAbnehmen(richtung) {
+  blatt?.remove();
+  const el = document.createElement('div');
+  el.className = `blatt ${richtung}`;
+  el.setAttribute('aria-hidden', 'true');
+  el.inert = true;
+  // Abbild der Seite: Kopfzeile fest oben, der Inhalt so weit verschoben wie gerade gescrollt
+  const kopf = document.querySelector('.topbar').cloneNode(true);
+  const inhalt = document.createElement('div');
+  inhalt.className = 'blatt-inhalt';
+  inhalt.style.transform = `translateY(${-window.scrollY}px)`;
+  inhalt.append(Object.assign(document.createElement('div'), { className: 'blatt-abstand' }), $app.cloneNode(true));
+  for (const n of [kopf, ...kopf.querySelectorAll('[id]'), ...inhalt.querySelectorAll('[id]')]) n.removeAttribute('id');
+  inhalt.querySelector('.blatt-abstand').style.height = `${document.querySelector('.topbar').offsetHeight}px`;
+  const seite = document.createElement('div');
+  seite.className = 'blatt-seite';
+  // der schwebende Knopf („+ Neu“) bleibt unten auf dem Blatt
+  seite.append(inhalt, kopf, ...inhalt.querySelectorAll('.fab'));
+  el.append(seite);
+  document.body.append(el);
+  blatt = el;
+  // falls die neue Seite auf sich warten lässt, trotzdem umblättern
+  clearTimeout(blattNotfall);
+  blattNotfall = setTimeout(blattLos, 1500);
+}
+
+// neue Seite steht darunter bereit: das Blatt umschlagen
+function blattLos() {
+  clearTimeout(blattNotfall);
+  const el = blatt;
+  if (!el || el.classList.contains('los')) return;
+  blatt = null;
+  el.addEventListener('animationend', e => { if (e.target.classList.contains('blatt-seite')) el.remove(); });
+  setTimeout(() => el.remove(), 1200); // falls keine Animation läuft
+  requestAnimationFrame(() => el.classList.add('los'));
+}
+
+document.querySelector('.tabbar').addEventListener('click', e => {
+  const a = e.target.closest('a[data-tab]');
+  const aktiv = document.querySelector('.tabbar a.active')?.dataset.tab;
+  if (!a || !aktiv || a.dataset.tab === aktiv) return;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  blattAbnehmen(TAB_FOLGE.indexOf(a.dataset.tab) > TAB_FOLGE.indexOf(aktiv) ? 'vor' : 'zurueck');
+});
+
 async function router() {
   const token = ++routeToken;
   if (typeof history.state?.idx === 'number') historyIdx = history.state.idx;
@@ -2096,7 +2282,10 @@ async function router() {
       console.error(err);
       if (token === routeToken) $app.innerHTML = `<div class="empty"><p>Da ist etwas schiefgelaufen:</p><p class="small">${esc(err.message)}</p></div>`;
     }
-    if (token === routeToken) window.scrollTo(0, 0);
+    if (token === routeToken) {
+      window.scrollTo(0, 0);
+      blattLos();
+    }
     return;
   }
   go('#/werkstuecke', true);

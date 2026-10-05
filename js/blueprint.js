@@ -408,7 +408,10 @@ const pfad = (pts, closed) => pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixe
  * values/pos: eingetragene Maße je Stelle (cm)
  */
 // papier: eigenes Aquarellpapier zeichnen (sonst liegt die Zeichnung direkt auf dem Papier der App)
-export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = [], interactive = true, seed = 1, papier = false } = {}) {
+// skizze: nur die Form, ohne Maße, Beschriftung und Titel – quadratisch und mittig, wie eine
+// Skizze auf einer Seite im Skizzenbuch (Übersicht der Werkstücke)
+export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = [], interactive = true, seed = 1, papier = false, skizze = false } = {}) {
+  if (skizze) { interactive = false; info = []; title = ''; }
   const uid = `bp${++svgCounter}`;
   // von Hand geschrieben: jede Beschriftung sitzt ein wenig anders
   const hand = rng(seed);
@@ -436,7 +439,10 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
     yMin = Math.min(yMin, t * cb); yMax = Math.max(yMax, t * cb);
   }
 
-  const Hd = Math.min(330 / (yMax - yMin), 184 / Math.max(0.2, extL + extR));
+  // als Skizze: jedes Stück gleich groß, damit die Striche überall gleich kräftig wirken
+  const Hd = skizze
+    ? 200 / Math.max(yMax - yMin, extL + extR, 0.2)
+    : Math.min(330 / (yMax - yMin), 184 / Math.max(0.2, extL + extR));
   const titleLines = wrap(title, 22).slice(0, 2);
   const titleH = titleLines.length ? 30 + titleLines.length * 26 : 24;
   const top = titleH + -yMin * Hd + 22; // Mitte der Öffnung
@@ -493,8 +499,10 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
       attInfo.push(`${name}: ${Math.round((a.t1 - a.t0) * 100)} % der Höhe, steht ${Math.round(a.reach * 100)} % ab`);
     }
   });
-  info = [...info, ...attInfo];
-  if (abg.angepasst) info.push('Form an die eingetragenen Maße angepasst');
+  if (!skizze) {
+    info = [...info, ...attInfo];
+    if (abg.angepasst) info.push('Form an die eingetragenen Maße angepasst');
+  }
 
   // Beschriftungen ohne Überlappung
   const items = points.filter(p => p.t != null).map(p => ({ p, yA: yOf(p.t), xA: axis + side * rAt(p.t) * Hd })).sort((a, b) => a.yA - b.yA);
@@ -520,7 +528,7 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
   const btn = key => (interactive ? ` data-bp-key="${key}" role="button" tabindex="0"` : '');
   const anchor = side > 0 ? '' : ' text-anchor="end"';
   let labels = '';
-  for (const { p, yA, xA, yL } of items) {
+  for (const { p, yA, xA, yL } of skizze ? [] : items) {
     const vt = valueText(p);
     const ps = posText(p);
     labels += `<path d="M${(xA + side * 4).toFixed(1)} ${yA.toFixed(1)}L${labelX - side * 22} ${yA.toFixed(1)}L${labelX - side * 8} ${yL.toFixed(1)}" class="lead"/>`;
@@ -534,7 +542,7 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
   }
 
   // Höhenmaß auf der anderen Seite (von der Ebene der Öffnung bis zur Standfläche)
-  const hp = points.find(p => p.key === 'hoehe');
+  const hp = !skizze && points.find(p => p.key === 'hoehe');
   let height = '';
   if (hp) {
     const vt = valueText(hp);
@@ -557,8 +565,16 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
 
   const titleSvg = titleLines.map((l, i) => `<text x="${W - 20}" y="${40 + i * 26}" text-anchor="end" class="title"${schief(W - 20, 40 + i * 26)}>${escXml(l)}</text>`).join('');
   const half = Math.max(extL, extR) * Hd;
+  // Bildausschnitt: als Skizze ein Quadrat um die Form, sonst das ganze Blatt
+  let vb = [0, 0, W, H];
+  if (skizze) {
+    const x0 = axis - extL * Hd, x1 = axis + extR * Hd, y0 = top + yMin * Hd, y1 = top + yMax * Hd;
+    const S = Math.max(x1 - x0, y1 - y0) * 1.16;
+    vb = [(x0 + x1) / 2 - S / 2, (y0 + y1) / 2 - S / 2, S, S].map(z => Math.round(z * 10) / 10);
+  }
+  const bereich = `x="${vb[0]}" y="${vb[1]}" width="${vb[2]}" height="${vb[3]}"`;
 
-  return `<svg class="blueprint" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Blaupause ${escXml(title)}">
+  return `<svg class="blueprint${skizze ? ' skizze' : ''}" viewBox="${vb.join(' ')}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${skizze ? 'Skizze' : `Blaupause ${escXml(title)}`}">
   <style>
     #${uid} text { font-family: ${SCHRIFT}; fill: ${GRAPHIT}; }
     #${uid} .shape path { fill: none; stroke: ${GRAPHIT}; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; opacity: .9; }
@@ -566,7 +582,10 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
     #${uid} .shape .oeffnung { fill: ${GRAPHIT}; fill-opacity: .07; stroke: none; }
     #${uid} .shape .achse { stroke-width: .6; stroke-dasharray: 10 4 2 4; opacity: .4; }
     #${uid} .shape .thin { stroke-width: 1; opacity: .7; }
-    #${uid} .shape .dash { stroke-dasharray: 6 5; stroke-width: 1; opacity: .55; }
+    #${uid} .shape .dash { stroke-dasharray: 6 5; stroke-width: 1; opacity: .55; }${skizze ? `
+    #${uid} .shape path { stroke-width: 2.3; }
+    #${uid} .shape .zweit { stroke-width: 1.5; }
+    #${uid} .shape .thin, #${uid} .shape .dash { stroke-width: 1.3; }` : ''}
     #${uid} .lead { fill: none; stroke: ${GRAPHIT}; stroke-width: .7; opacity: .6; stroke-linecap: round; }
     #${uid} .dot { fill: ${GRAPHIT}; opacity: .85; }
     #${uid} .dim { fill: none; stroke: ${GRAPHIT}; stroke-width: .75; opacity: .75; stroke-linecap: round; stroke-linejoin: round; }
@@ -586,7 +605,7 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
   </style>
   <defs>
     <!-- Aquarellpapier: Körnung als Relief (Licht von links oben), dazu leichte Wolken -->
-    <filter id="${uid}-papier" filterUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}" color-interpolation-filters="sRGB">
+    <filter id="${uid}-papier" filterUnits="userSpaceOnUse" ${bereich} color-interpolation-filters="sRGB">
       <feTurbulence type="fractalNoise" baseFrequency="0.11" numOctaves="4" seed="${seed % 89}" result="korn"/>
       <feDiffuseLighting in="korn" surfaceScale="1.5" diffuseConstant="1" lighting-color="#ffffff" result="licht">
         <feDistantLight azimuth="225" elevation="58"/>
@@ -603,7 +622,7 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
       <feComposite in="flecken" in2="papier" operator="over"/>
     </filter>
     <!-- Bleistift: Graphit bleibt nur auf den Spitzen der Papierkörnung hängen -->
-    <filter id="${uid}-blei" filterUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}">
+    <filter id="${uid}-blei" filterUnits="userSpaceOnUse" ${bereich}>
       <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="${seed % 71}" result="n"/>
       <feColorMatrix in="n" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -1.3 1.5" result="zahn"/>
       <feComposite in="SourceGraphic" in2="zahn" operator="in" result="g"/>
@@ -614,12 +633,12 @@ export function renderBlueprint(bp, { values = {}, pos = {}, title = '', info = 
       <stop offset="70%" stop-color="#6e6a63" stop-opacity="0"/>
       <stop offset="100%" stop-color="#6e6a63" stop-opacity=".12"/>
     </radialGradient>
-    <mask id="${uid}-hm" maskUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}">
-      <rect width="${W}" height="${H}" fill="#fff"/>
+    <mask id="${uid}-hm" maskUnits="userSpaceOnUse" ${bereich}>
+      <rect ${bereich} fill="#fff"/>
       <path d="${umrissPfad}" fill="#000"/>
     </mask>
   </defs>
-  <clipPath id="${uid}-c"><rect width="${W}" height="${H}"/></clipPath>
+  <clipPath id="${uid}-c"><rect ${bereich}/></clipPath>
   <g id="${uid}" clip-path="url(#${uid}-c)">
     ${papier ? `<rect width="${W}" height="${H}" fill="${PAPIER}" filter="url(#${uid}-papier)"/>
     <rect width="${W}" height="${H}" fill="url(#${uid}-rand)"/>` : ''}

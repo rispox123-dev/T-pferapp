@@ -4,7 +4,7 @@ Eine Handy-App für Töpferinnen und Töpfer, die eigene Stücke töpfern und ei
 
 ## Was die App kann
 
-Unten wechselst du zwischen **Töpfern**, **Glasieren**, **Glasuren** und **Mehr**. Dabei blättert die Seite um wie in einem Skizzenbuch: vorwärts nach links, zurück nach rechts (bei „Bewegung reduzieren“ im System ohne Animation).
+Unten wechselst du zwischen **Töpfern**, **Glasieren**, **Glasuren** und **Mehr**. Dabei blättert die Seite um wie in einem Skizzenbuch: vorwärts nach links, zurück nach rechts (bei „Bewegung reduzieren“ im System ohne Animation). Umblättern geht auch per Wischen am Seitenrand: vom rechten Rand nach links zur nächsten, vom linken Rand nach rechts zur vorigen Seite. Das Blatt folgt dabei dem Finger; wer nicht weit genug wischt, legt es wieder zurück.
 
 ### 1. Töpfern – Werkstücke als Bibliothek zum Wiederholen
 - Fotos des Stücks: gezeichnete **Kamera** („Foto“, die geführte Aufnahme für die Blaupause; ohne Kamerazugriff im Browser die Kamera des Handys) oder **Bilderrahmen** („Galerie“)
@@ -108,6 +108,7 @@ node tools/test/henkel-ecken.mjs 40      # Henkel (wie viel erfasst) und obere E
 node tools/test/app-test.mjs             # Ende-zu-Ende im Browser mit simulierter Kamera, Vollbild, Zoom, Henkel-Werkzeug
 node tools/test/massband-test.mjs        # Maßband: Startwert, 1-mm-genaues und schnelles Wischen, Übernahme, Blaupause, Skizzenbuch-Ansicht
 node tools/test/werte-test.mjs           # alle Zahlen der Formulare mit dem Maßband (Werkstück, Glasurprotokoll, Glasur)
+node tools/test/umblaettern-test.mjs     # Umblättern per Wischen am Rand, Skizzen auf dem Blatt (nicht schwarz)
 ```
 
 - `tools/formen/typologie.mjs` – Formfamilien gedrehter Gefäße (Proportionen, Fuß, Bauch, Taille, Schulter, Hals, Lippe)

@@ -997,4 +997,15 @@ dialog.masse::backdrop { background: rgba(40, 36, 30, .25); }
 }
 @keyframes blatt-dunkel { to { opacity: 1; } }
 @keyframes blatt-schatten { 0% { opacity: 0; } 35% { opacity: 1; } 100% { opacity: 0; } }
+/* Wischen am Rand: das Blatt folgt dem Finger (--winkel), Schatten wachsen mit (--p) */
+.blatt.ziehen .blatt-seite {
+  transform: rotateY(var(--winkel, 0deg));
+  box-shadow: calc(var(--p, 0) * 14px) 0 28px rgba(40, 36, 30, calc(var(--p, 0) * .22));
+}
+.blatt.ziehen.zurueck .blatt-seite { box-shadow: calc(var(--p, 0) * -14px) 0 28px rgba(40, 36, 30, calc(var(--p, 0) * .22)); }
+.blatt.ziehen .blatt-seite::after { opacity: var(--p, 0); }
+.blatt.ziehen::before { opacity: min(1, calc(var(--p, 0) * 3), calc((1 - var(--p, 0)) * 2)); }
+.blatt.ziehen.gleiten .blatt-seite,
+.blatt.ziehen.gleiten .blatt-seite::after,
+.blatt.ziehen.gleiten::before { transition: transform var(--dauer, .3s) ease-out, box-shadow var(--dauer, .3s) ease-out, opacity var(--dauer, .3s) ease-out; }
 @media (prefers-reduced-motion: reduce) { .blatt { display: none; } }

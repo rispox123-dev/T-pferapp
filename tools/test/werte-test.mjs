@@ -153,12 +153,21 @@ const glasur = (await alle('glazes'))[0];
 console.log('Glasur:', JSON.stringify({ lg: glasur.litergewicht, rezept: glasur.rezept }));
 pruefe(glasur.rezept[0].anteil === 12.5 && glasur.litergewicht == null, 'Glasur richtig gespeichert');
 
+await page.goto(`http://localhost:${port}/#/glasuren`);
+await page.waitForSelector('#page-title:text("Glasuren")');
+pruefe(!(await page.isVisible('#back-btn')), 'Hauptseite Glasuren: kein Zurück-Pfeil');
+await page.goto(`http://localhost:${port}/#/glasuren/neu`);
+await page.waitForSelector('.single-photo');
+pruefe(!(await page.isVisible('.single-photo input[type="file"]')) && await page.isVisible('#back-btn'), 'Einzelfoto ohne rohe Dateiknöpfe, Unterseite mit Zurück-Pfeil');
+const [auswahl] = await Promise.all([page.waitForEvent('filechooser'), page.click('.single-photo [data-pick="lib"]')]);
+pruefe(!!auswahl, '„Aus Galerie“ öffnet weiterhin die Dateiauswahl');
+
 // ---------- Umblättern in der Tableiste ----------
 pruefe((await page.textContent('.tabbar a[data-tab="werkstuecke"]')).trim() === 'Töpfern', 'Tableiste: „Töpfern“ statt „Werkstücke“');
 await page.click('.tabbar a[data-tab="werkstuecke"]');
 await page.waitForSelector('#piece-grid');
 await page.waitForSelector('.blatt', { state: 'detached', timeout: 3000 });
-pruefe((await page.textContent('#page-title')) === 'Töpfern', 'Überschrift „Töpfern“');
+pruefe((await page.textContent('#page-title')) === 'Töpfern' && !(await page.isVisible('#back-btn')), 'Überschrift „Töpfern“, kein Zurück-Pfeil');
 await page.click('.tabbar a[data-tab="glasuren"]');
 pruefe(!!(await page.$('.blatt.vor')), 'Töpfern → Glasuren: Blatt wird nach vorn umgeblättert');
 await page.waitForTimeout(260);

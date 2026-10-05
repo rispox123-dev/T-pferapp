@@ -73,7 +73,7 @@ await page.click('.kamera-ausloeser');
 await page.waitForSelector('.pp-item img[src]', { timeout: 10000 });
 // nach dem Foto: Grundmaße abfragen (Zettel + Maßband); Höhe 10 cm mit den Pfeiltasten
 await page.waitForSelector('dialog.masse[open]', { timeout: 10000 });
-await page.click('.masse-zeile[data-k="hoehe"]');
+await page.click('[data-f="hoehe"]');
 for (let i = 0; i < 5; i++) await page.keyboard.press('Shift+ArrowRight');
 await page.waitForTimeout(300);
 await page.screenshot({ path: join(ausgabe, 'app-2b-masse.png') });

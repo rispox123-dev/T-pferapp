@@ -826,3 +826,51 @@ dialog.masse::backdrop { background: rgba(40, 36, 30, .25); }
   -webkit-mask-image: linear-gradient(to right, transparent, #000 14%, #000 86%, transparent);
   mask-image: linear-gradient(to right, transparent, #000 14%, #000 86%, transparent);
 }
+
+/* eigene Stellen auf dem Zettel: Taille, Schulter, Bauch mit Ø und Höhe */
+.masse-stellen { list-style: none; margin: 6px 0 0; padding: 0; }
+.masse-stellen:empty { display: none; }
+.stelle {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto 34px; align-items: end; gap: 0 10px;
+  padding: 4px 0 6px; border-top: 1px solid var(--line);
+}
+.stelle .masse-name { align-self: center; color: var(--text); font-size: 1.1rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stelle-feld {
+  --strich: var(--strich-salbei);
+  display: flex; flex-direction: column; align-items: flex-end;
+  min-height: 44px; padding: 2px 2px 6px;
+  border: 0; background: none; cursor: pointer;
+  font-size: 1.08rem; line-height: 1.15;
+}
+.stelle-feld small { color: var(--muted); font-size: .78rem; }
+.stelle-feld .masse-wert { padding: 0 2px 3px; }
+.stelle-feld[aria-pressed="true"] .masse-wert { background: var(--strich) no-repeat center bottom / 100% 9px; }
+.stelle-feld:focus-visible, .muell:focus-visible, .plus-knopf:focus-visible, .plus-wahl button:focus-visible { outline: 1.5px dashed var(--muted); outline-offset: 2px; }
+.muell {
+  width: 34px; height: 40px; padding: 6px 4px;
+  border: 0; background: none; color: var(--muted); cursor: pointer;
+}
+.muell svg, .plus-knopf svg { display: block; width: 100%; height: 100%; }
+.muell path, .plus-knopf path { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.muell:active { color: var(--bad); }
+.masse-plus { display: flex; align-items: center; gap: 14px; margin: 6px 0 0; min-height: 44px; }
+.plus-knopf {
+  flex: 0 0 auto; width: 40px; height: 40px; padding: 6px;
+  border: 0; background: none; color: var(--text); cursor: pointer;
+}
+.plus-knopf .kreis { opacity: .55; }
+.plus-knopf[aria-expanded="true"] { transform: rotate(45deg); }
+.plus-knopf { transition: transform .15s; }
+.plus-wahl { display: flex; flex-wrap: wrap; gap: 2px 14px; }
+.plus-wahl[hidden] { display: none; }
+.plus-wahl button {
+  min-height: 40px; padding: 2px 4px 7px;
+  border: 0; cursor: pointer; font-size: 1.1rem; color: var(--text);
+  background: var(--strich) no-repeat center bottom 3px / 100% 8px;
+}
+.plus-wahl button:nth-child(1) { --strich: var(--strich-blau); }
+.plus-wahl button:nth-child(2) { --strich: var(--strich-ocker); }
+.plus-wahl button:nth-child(3) { --strich: var(--strich-flieder); }
+
+/* eigene Stellen in der Werkstückansicht und im Formular */
+.stellen-liste { margin-top: 12px; }

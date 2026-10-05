@@ -47,8 +47,9 @@ await page.waitForTimeout(400);
 pruefe(!(await page.isVisible('.massband.offen')), 'Maßband erst nach dem Antippen eines Maßes');
 await page.screenshot({ path: join(ausgabe, 'massband-1-zettel.png') });
 
-const wert = k => page.textContent(`.masse-zeile[data-k="${k}"] .masse-wert`);
-await page.click('.masse-zeile[data-k="dOben"]');
+const wert = k => page.textContent(`[data-f="${k}"] .masse-wert`);
+pruefe(!(await page.$('[data-ende="spaeter"]')), 'kein „Überspringen“');
+await page.click('[data-f="dOben"]');
 await page.waitForTimeout(400);
 const band = await page.locator('.massband canvas').boundingBox();
 pruefe(Math.abs(band.height - 844 * 0.15) < 2, `Maßband 15 % der Bildschirmhöhe (${band.height.toFixed(1)} px)`);
@@ -85,25 +86,75 @@ pruefe(schnell > 10, `schnell 250 px nach links → großer Sprung (${await wert
 await page.screenshot({ path: join(ausgabe, 'massband-3-gewischt.png') });
 
 // zweites Maß: Höhe mit den Pfeiltasten
-await page.click('.masse-zeile[data-k="hoehe"]');
+await page.click('[data-f="hoehe"]');
 pruefe((await wert('hoehe')) === '5,0 cm', 'Höhe startet bei 5 cm');
 for (let i = 0; i < 5; i++) await page.keyboard.press('Shift+ArrowRight');
 await page.keyboard.press('ArrowRight');
 pruefe((await wert('hoehe')) === '10,1 cm', `Pfeiltasten → 10,1 cm (${await wert('hoehe')})`);
+
+// eigene Stellen: + → Taille, Schulter oder Bauch; je Stelle Ø und Höhe mit dem Maßband
+const stelleWert = (i, f) => page.textContent(`.stelle:nth-child(${i}) [data-f$=":${f}"] .masse-wert`);
+const namen = () => page.$$eval('.stelle .masse-name', l => l.map(e => e.textContent));
+await page.click('.plus-knopf');
+pruefe(await page.isVisible('.plus-wahl [data-art="schulter"]'), '+ zeigt Taille, Schulter, Bauch');
+await page.click('.plus-wahl [data-art="taille"]');
+pruefe((await stelleWert(1, 'd')) === '5,0 cm' && await page.isVisible('.massband.offen'), 'neue Taille: Ø startet bei 5 cm, Maßband offen');
+await wisch(300, -8, 10, 60);
+pruefe((await stelleWert(1, 'd')) === '6,0 cm', `Taille Ø gewischt → 6,0 cm (${await stelleWert(1, 'd')})`);
+await page.click('.stelle:nth-child(1) [data-f$=":h"]');
+for (let i = 0; i < 2; i++) await page.keyboard.press('Shift+ArrowRight');
+pruefe((await stelleWert(1, 'h')) === '7,0 cm', `Taille Höhe → 7,0 cm (${await stelleWert(1, 'h')})`);
+await page.click('.plus-knopf');
+await page.click('.plus-wahl [data-art="taille"]');
+pruefe(JSON.stringify(await namen()) === '["Taille 1","Taille 2"]', `zwei Taillen einzeln (${await namen()})`);
+await page.click('.plus-knopf');
+await page.click('.plus-wahl [data-art="bauch"]');
+for (let i = 0; i < 3; i++) await page.keyboard.press('Shift+ArrowRight');
+await page.click('.stelle:nth-child(3) [data-f$=":h"]');
+for (let i = 0; i < 2; i++) await page.keyboard.press('Shift+ArrowLeft');
+await page.screenshot({ path: join(ausgabe, 'massband-4-stellen.png') });
+await page.click('.stelle:nth-child(2) .muell');
+pruefe(JSON.stringify(await namen()) === '["Taille","Bauch"]', `Mülleimer löscht Taille 2 (${await namen()})`);
+pruefe((await stelleWert(2, 'd')) === '8,0 cm' && (await stelleWert(2, 'h')) === '3,0 cm', 'Bauch: Ø 8,0 cm auf 3,0 cm');
 
 await page.click('[data-ende="ok"]');
 await page.waitForSelector('dialog.masse', { state: 'detached' });
 const formular = await page.evaluate(() => Object.fromEntries(['hoehe', 'dOben', 'dMax', 'dBoden'].map(k => [k, document.querySelector(`input[name="nass.${k}"]`).value])));
 console.log('Formular:', JSON.stringify(formular));
 pruefe(formular.hoehe === '10.1' && Number(formular.dOben) === schnell && formular.dMax === '' && formular.dBoden === '', 'nur angetippte Maße ins Formular übernommen');
+const liste = await page.textContent('#stellen');
+pruefe(liste.includes('Ø Taille') && liste.includes('Ø Bauch'), `Stellen im Formular (${liste.trim().replace(/\s+/g, ' ')})`);
 
-// zweites Foto: Zettel zeigt die eingetragenen Werte, Überspringen ändert nichts
+// zweites Foto: Zettel zeigt die eingetragenen Werte und Stellen
 await page.setInputFiles('.pp-lib', { name: 'becher2.png', mimeType: 'image/png', buffer: foto });
 await page.waitForSelector('dialog.masse[open]', { timeout: 10000 });
-pruefe((await wert('hoehe')) === '10,1 cm', 'zweites Foto: Zettel zeigt die eingetragene Höhe');
-await page.click('[data-ende="spaeter"]');
+pruefe((await wert('hoehe')) === '10,1 cm' && (await namen()).length === 2, 'zweites Foto: Zettel zeigt Höhe und Stellen');
+await page.click('[data-ende="ok"]');
 await page.waitForSelector('dialog.masse', { state: 'detached' });
-pruefe((await page.inputValue('input[name="nass.hoehe"]')) === '10.1', 'Überspringen lässt die Maße unverändert');
+pruefe((await page.inputValue('input[name="nass.hoehe"]')) === '10.1', 'unverändert übernommen');
+
+// speichern → Blaupause mit den eigenen Stellen
+await page.fill('input[name="name"]', 'Zickzack-Becher');
+await page.click('button[type="submit"]');
+await page.waitForSelector('.bp-card svg', { timeout: 20000 });
+const bpText = await page.textContent('.bp-card svg');
+pruefe(bpText.includes('Ø Taille') && bpText.includes('Ø Bauch') && bpText.includes('6 cm') && bpText.includes('auf 7 cm Höhe'), 'Blaupause zeigt Taille (6 cm auf 7 cm Höhe) und Bauch');
+await page.screenshot({ path: join(ausgabe, 'massband-5-werkstueck.png'), fullPage: true });
+
+// in der Werkstückansicht: Zettel öffnen, Schulter hinzufügen
+await page.click('#zettel');
+await page.waitForSelector('dialog.masse[open]');
+await page.click('.plus-knopf');
+await page.click('.plus-wahl [data-art="schulter"]');
+await page.click('[data-ende="ok"]');
+await page.waitForSelector('dialog.masse', { state: 'detached' });
+await page.waitForSelector('.bp-card svg');
+const gespeichert = await page.evaluate(() => new Promise(res => {
+  const r = indexedDB.open('toepferbuch');
+  r.onsuccess = () => { const q = r.result.transaction('pieces').objectStore('pieces').getAll(); q.onsuccess = () => res(q.result[0].stellen); };
+}));
+console.log('Stellen gespeichert:', JSON.stringify(gespeichert));
+pruefe(gespeichert.length === 3 && gespeichert[2].art === 'schulter' && (await page.textContent('.bp-card svg')).includes('Ø Schulter'), 'Werkstückansicht: Schulter hinzugefügt und gespeichert');
 
 console.log(fehler.length ? `\nFEHLER:\n${fehler.join('\n')}` : '\nAlles in Ordnung.');
 await browser.close();

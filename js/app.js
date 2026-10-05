@@ -1,9 +1,9 @@
 import * as db from './db.js';
 import { processImage, blobToDataUrl, dataUrlToBlob, brennweiteAusExif } from './image.js';
-import { findPoints, abgleich, renderBlueprint, hashSeed, alteWerte, istAutoName } from './blueprint.js';
+import { findPoints, abgleich, estimate, renderBlueprint, hashSeed, alteWerte, istAutoName } from './blueprint.js';
 import { analyze, loadForAnalysis, cropFromGuide, DEFAULT_SENS } from './erkennung.js';
 import { gefuehrteAufnahme, kameraVerfuegbar, GRUPPEN } from './kamera.js';
-import { masseAbfragen } from './massband.js';
+import { masseAbfragen, stelleName } from './massband.js';
 
 // ---------------------------------------------------------------------------
 // Fachliche Listen
@@ -443,7 +443,7 @@ async function viewPiece(id) {
       </dl>
     </div>
 
-    ${masseRows.length || p.extra?.length ? `<div class="card">
+    <div class="card">
       <h2>Maße</h2>
       ${masseRows.length ? `<table class="measure">
         <thead><tr><th></th><th>Nass / frisch</th>${hatFertig ? '<th>Fertig</th><th>Schwund</th>' : ''}</tr></thead>
@@ -453,8 +453,10 @@ async function viewPiece(id) {
         }).join('')}</tbody>
       </table>` : ''}
       ${schwindung.length ? `<p class="small muted">Durchschnittliche Schwindung: <strong>${fmt(schwindung.reduce((a, b) => a + b, 0) / schwindung.length)} %</strong></p>` : ''}
+      ${stellenListe(p.stellen)}
       ${p.extra?.length ? `<dl class="facts" style="margin-top:12px">${p.extra.map(e => `<dt>${esc(e.label)}</dt><dd>${esc(e.wert)}</dd>`).join('')}</dl>` : ''}
-    </div>` : ''}
+      <div class="btn-row" style="margin:12px 0 2px"><button class="btn small" id="zettel">${masseRows.length || p.stellen?.length ? 'Maße &amp; Stellen ändern' : 'Maße eintragen'}</button></div>
+    </div>
 
     ${isNum(p.gewichtFertig) ? `<div class="card"><dl class="facts"><dt>Gewicht fertig</dt><dd>${withUnit(p.gewichtFertig, 'g', 0)}</dd></dl></div>` : ''}
 
@@ -477,6 +479,14 @@ async function viewPiece(id) {
       window.scrollTo(0, y);
     });
   }
+  $app.querySelector('#zettel').onclick = async () => {
+    if (!(await zettel(p))) return;
+    p.updatedAt = new Date().toISOString();
+    await db.put('pieces', p);
+    const y = window.scrollY;
+    await viewPiece(id);
+    window.scrollTo(0, y);
+  };
   $app.querySelector('#del').onclick = async () => {
     if (!confirm(`„${p.name || 'Werkstück'}“ wirklich löschen? Glasurprotokolle bleiben erhalten.`)) return;
     for (const ph of p.photos || []) await deletePhoto(ph);
@@ -498,6 +508,7 @@ async function viewPieceForm(id, params) {
       : { datum: today(), photos: [], nass: {}, fertig: {}, extra: [] };
   }
   const photos = [...(p.photos || [])];
+  let stellen = structuredClone(p.stellen || []);
   const extra = (p.extra || []).map(e => ({ a: e.label, b: e.wert }));
   const session = photoSession();
   const nass = p.nass || {};
@@ -533,6 +544,8 @@ async function viewPieceForm(id, params) {
       <div class="fields-2">
         ${[...MASSE, ...MASSE_NUR_NASS].map(([k, label, unit]) => field(label, `nass.${k}`, nass[k], { type: 'number', unit })).join('')}
       </div>
+      <div id="stellen"></div>
+      <div class="btn-row" style="margin:8px 0 2px"><button type="button" class="btn small" id="zettel">Zettel öffnen: Maße &amp; Stellen</button></div>
     </div>
 
     <div class="card">
@@ -562,11 +575,20 @@ async function viewPieceForm(id, params) {
   </form>`;
 
   const form = $app.querySelector('#f');
-  // Nach dem Foto die vier Grundmaße abfragen – damit wird die Blaupause am genauesten
-  mountMultiPhoto($app.querySelector('#photos'), photos, session, async () => {
-    const res = await masseAbfragen(Object.fromEntries(MASSE.map(([k]) => [k, numVal(form, `nass.${k}`)])));
-    for (const [k, v] of Object.entries(res || {})) form.elements[`nass.${k}`].value = v;
-  });
+  const stellenEl = $app.querySelector('#stellen');
+  const zeigeStellen = () => { stellenEl.innerHTML = stellenListe(stellen); };
+  zeigeStellen();
+  // Grundmaße und eigene Stellen auf dem Zettel; Ergebnis direkt ins Formular
+  const zettelFormular = async () => {
+    const res = await masseAbfragen(Object.fromEntries(MASSE.map(([k]) => [k, numVal(form, `nass.${k}`)])), stellen);
+    if (!res) return;
+    for (const [k, v] of Object.entries(res.werte)) form.elements[`nass.${k}`].value = v;
+    stellen = res.stellen;
+    zeigeStellen();
+  };
+  $app.querySelector('#zettel').onclick = zettelFormular;
+  // Nach dem Foto die Maße abfragen – damit wird die Blaupause am genauesten
+  mountMultiPhoto($app.querySelector('#photos'), photos, session, zettelFormular);
   mountRepeat($app.querySelector('#extra'), extra, { labelA: 'Bezeichnung', labelB: 'Wert', addLabel: 'Angabe hinzufügen' });
 
   $app.querySelector('#cancel').onclick = () => $back.click();
@@ -585,6 +607,7 @@ async function viewPieceForm(id, params) {
       nass: Object.fromEntries([...MASSE, ...MASSE_NUR_NASS].map(([k]) => [k, numVal(form, `nass.${k}`)])),
       fertig: Object.fromEntries(MASSE.map(([k]) => [k, numVal(form, `fertig.${k}`)])),
       gewichtFertig: numVal(form, 'gewichtFertig'),
+      stellen,
       extra: extra.filter(r => r.a.trim() || r.b.trim()).map(r => ({ label: r.a.trim(), wert: r.b.trim() })),
       notizen: strVal(form, 'notizen'),
       photos,
@@ -615,7 +638,43 @@ const BP_FIELDS = { hoehe: 'hoehe', rand: 'dOben', bauch: 'dMax', fuss: 'dBoden'
 function bpData(p) {
   const values = alteWerte(p.blueprint?.values);
   for (const [key, f] of Object.entries(BP_FIELDS)) values[key] = isNum(p.nass?.[f]) ? Number(p.nass[f]) : null;
-  return { values, pos: alteWerte(p.blueprint?.pos) };
+  const pos = alteWerte(p.blueprint?.pos);
+  for (const s of p.stellen || []) { values[stelleKey(s)] = s.d; pos[stelleKey(s)] = s.h; }
+  return { values, pos };
+}
+
+// Eigene Stellen vom Zettel (Taille, Schulter, Bauch mit Ø und Höhe vom Boden)
+const stelleKey = s => `stelle-${s.id}`;
+// automatisch gefundene Stellen dieser Art treten zurück, sobald eigene eingetragen sind
+const STELLEN_AUTO = { taille: ['taille', 'taille2'], schulter: ['schulter'], bauch: ['bauch'] };
+
+// Blaupause mit den eigenen Stellen: Sie liegen auf der eingetragenen Höhe (Maßstab: die
+// eingetragene Höhe, sonst die Schätzung aus den übrigen Maßen) und haben den eingetragenen Ø
+function bpMitStellen(p, bp = p.blueprint) {
+  const stellen = p.stellen || [];
+  if (!bp || !stellen.length) return bp;
+  const { values, pos } = bpData({ ...p, stellen: [] });
+  const scale = estimate(bp, values, pos).scale;
+  return {
+    ...bp,
+    hidden: [...new Set([...(bp.hidden || []), ...stellen.flatMap(s => STELLEN_AUTO[s.art] || [])])],
+    custom: [...(bp.custom || []), ...stellen.map(s => ({ key: stelleKey(s), t: scale ? Math.max(0.01, Math.min(0.99, 1 - s.h / scale)) : 0.5 }))],
+    labels: { ...(bp.labels || {}), ...Object.fromEntries(stellen.map(s => [stelleKey(s), `Ø ${stelleName(stellen, s)}`])) },
+  };
+}
+
+function stellenListe(stellen = []) {
+  if (!stellen.length) return '';
+  return `<dl class="facts stellen-liste">${stellen.map(s => `<dt>Ø ${esc(stelleName(stellen, s))}</dt><dd>${withUnit(s.d, 'cm')} <span class="muted">auf ${withUnit(s.h, 'cm')} Höhe</span></dd>`).join('')}</dl>`;
+}
+
+// Zettel für ein gespeichertes Werkstück; übernimmt Maße und Stellen in p (true, wenn übernommen)
+async function zettel(p) {
+  const res = await masseAbfragen(Object.fromEntries(MASSE.map(([k]) => [k, p.nass?.[k]])), p.stellen || []);
+  if (!res) return false;
+  p.nass = { ...(p.nass || {}), ...res.werte };
+  p.stellen = res.stellen;
+  return true;
 }
 
 function bpInfo(p) {
@@ -632,7 +691,7 @@ function blueprintSvg(p, preview, interactive) {
   const bp = preview
     ? { ...(p.blueprint || {}), profile: preview.profile, points: findPoints(preview.profile), handles: preview.handles }
     : p.blueprint;
-  return renderBlueprint(bp, { ...bpData(p), title: p.name, info: bpInfo(p), interactive, seed: hashSeed(p.id || p.name) });
+  return renderBlueprint(bpMitStellen(p, bp), { ...bpData(p), title: p.name, info: bpInfo(p), interactive, seed: hashSeed(p.id || p.name) });
 }
 
 // Foto mit eingezeichnetem Umriss: So hat die App das Stück erkannt
@@ -752,17 +811,27 @@ function mountBlueprint(container, p, onSaved) {
   const edit = async key => {
     const { values, pos } = bpData(p);
     // Schätzungen wie in der Zeichnung (an die eingetragenen Maße angeglichen)
-    const est = abgleich(bp(), values, pos);
+    const est = abgleich(bpMitStellen(p), values, pos);
     const pt = est.points.find(x => x.key === key);
     if (!pt) return;
     const interior = pt.t > 0 && pt.t < 1;
+    const stelle = (p.stellen || []).find(s => stelleKey(s) === key);
     const res = await measureDialog({
       title: pt.label, isHeight: key === 'hoehe', value: values[key], est: est.value(pt),
       showPos: interior, pos: pos[key], posEst: est.pos(pt),
-      label: key === 'hoehe' ? undefined : pt.label,
-      removeText: key === 'hoehe' ? '' : pt.custom ? 'Stelle löschen' : 'Stelle ausblenden',
+      label: key === 'hoehe' || stelle ? undefined : pt.label,
+      removeText: key === 'hoehe' ? '' : stelle || pt.custom ? 'Stelle löschen' : 'Stelle ausblenden',
     });
     if (!res) return;
+    if (stelle) {
+      // eigene Stelle vom Zettel: Ø und Höhe gehören zum Werkstück
+      if (res.action === 'remove') p.stellen = p.stellen.filter(s => s !== stelle);
+      else {
+        if (res.value != null) stelle.d = res.value;
+        if (res.pos != null) stelle.h = res.pos;
+      }
+      return save();
+    }
     if (res.action === 'remove') {
       if (pt.custom) bp().custom = (bp().custom || []).filter(c => c.key !== key);
       else bp().hidden = [...(bp().hidden || []), key];
@@ -779,7 +848,7 @@ function mountBlueprint(container, p, onSaved) {
   const add = async t => {
     const { values, pos } = bpData(p);
     const probe = { key: '_neu', t, m: 0 };
-    const est = abgleich(bp(), values, pos);
+    const est = abgleich(bpMitStellen(p), values, pos);
     probe.m = 2 * est.profile[Math.round(t * (est.profile.length - 1))];
     const res = await measureDialog({
       title: 'Neue Stelle', value: null, est: est.value(probe), showPos: true, pos: null, posEst: est.pos(probe), label: 'Ø Stelle',
@@ -845,8 +914,7 @@ async function viewBlueprintEditor(id) {
     const fid = await blaupausenFoto({ galerie: null });
     if (!fid) return null;
     p.photos = [fid, ...(p.photos || [])];
-    const res = await masseAbfragen(Object.fromEntries(MASSE.map(([k]) => [k, p.nass?.[k]])));
-    if (res) p.nass = { ...(p.nass || {}), ...res };
+    await zettel(p);
     p.updatedAt = new Date().toISOString();
     await db.put('pieces', p);
     return fid;

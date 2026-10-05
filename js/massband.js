@@ -50,6 +50,23 @@ function riss(rand, innen) {
   return `polygon(${pts.join(',')})`;
 }
 
+// Zusätzliche Stellen, die der Nutzer selbst einträgt (z. B. bei Zickzack-Wänden,
+// die die Formerkennung schlecht trifft); je Stelle Durchmesser und Höhe vom Boden
+export const STELLEN_ARTEN = [
+  ['taille', 'Taille'],
+  ['schulter', 'Schulter'],
+  ['bauch', 'Bauch'],
+];
+
+// „Taille“, bei mehreren derselben Art „Taille 1“, „Taille 2“ …
+export function stelleName(stellen, s) {
+  const gleich = stellen.filter(x => x.art === s.art);
+  const name = STELLEN_ARTEN.find(a => a[0] === s.art)?.[1] || 'Stelle';
+  return gleich.length > 1 ? `${name} ${gleich.indexOf(s) + 1}` : name;
+}
+
+const neueId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
 // kleine Skizze: wo wird gemessen?
 const SKIZZE = `<svg class="masse-skizze" viewBox="0 0 100 112" aria-hidden="true">
   <g class="topf">
@@ -61,21 +78,45 @@ const SKIZZE = `<svg class="masse-skizze" viewBox="0 0 100 112" aria-hidden="tru
   <g class="mass" data-mass="dOben"><path d="M32 9H68M32 5V13M68 5V13"/></g>
   <g class="mass" data-mass="dMax"><path d="M18 60H82M18 56V64M82 56V64"/></g>
   <g class="mass" data-mass="dBoden"><path d="M34 107H66M34 103V111M66 103V111"/></g>
+  <g class="mass" data-mass="stelle"><path/></g>
 </svg>`;
 
-// werte: { hoehe, dOben, dMax, dBoden } in cm (oder leer).
-// Ergebnis: die geänderten Maße in cm, oder null, wenn übersprungen
-export function masseAbfragen(werte = {}) {
+// halbe Breite des Skizzen-Topfs auf Höhe y (für die Linie einer eigenen Stelle)
+const TOPF = [[18, 18], [32, 27], [44, 31], [60, 32], [77, 30], [89, 23], [98, 16]];
+function topfBreite(y) {
+  for (let i = 1; i < TOPF.length; i++) {
+    if (y <= TOPF[i][0]) {
+      const [a, b] = [TOPF[i - 1], TOPF[i]];
+      return a[1] + ((y - a[0]) / (b[0] - a[0])) * (b[1] - a[1]);
+    }
+  }
+  return 16;
+}
+
+// gezeichneter Mülleimer
+const MUELL = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 6.6C9 6.1 15 6.2 19.6 6.8M9.6 6.3C9.5 4.6 10 3.9 12 3.9S14.6 4.5 14.4 6.4M6.4 7.2L7.6 19.6C7.8 20.6 8.4 20.9 9.4 20.9L14.8 20.8C15.8 20.8 16.3 20.4 16.4 19.5L17.6 7.3M10.1 10L10.4 17.8M13.9 10.1L13.6 17.7"/></svg>`;
+const PLUS = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.2 6.4C12 10 12.1 14.5 11.9 17.8M6.3 12.1C10 11.9 14.2 12.2 17.8 11.9"/><path d="M12 2.8C6.6 2.6 2.9 6.6 3 12.1S7 21.3 12.3 21.1 21.2 17 21 11.7 17.2 2.9 11.4 3.1" class="kreis"/></svg>`;
+
+// werte: { hoehe, dOben, dMax, dBoden } in cm (oder leer); stellen: [{ id, art, d, h }] in cm.
+// Ergebnis: { werte: geänderte Grundmaße in cm, stellen: alle Stellen in cm } oder null (Esc)
+export function masseAbfragen(werte = {}, stellen = []) {
   return new Promise(resolve => {
+    const zuMm = v => (v != null && v !== '' && Number(v) > 0 ? Math.round(Number(v) * 10) : null);
     const start = {};
     const mm = {};
-    for (const [k] of GRUNDMASSE) {
-      const v = Number(werte[k]);
-      start[k] = werte[k] != null && werte[k] !== '' && v > 0 ? Math.round(v * 10) : null;
-      mm[k] = start[k];
-    }
-    let aktiv = null;
+    for (const [k] of GRUNDMASSE) start[k] = mm[k] = zuMm(werte[k]);
+    const st = stellen.map(s => ({ id: s.id, art: s.art, d: zuMm(s.d) ?? START_MM, h: zuMm(s.h) ?? START_MM }));
+    let aktiv = null; // gewähltes Feld: Grundmaß-Schlüssel oder „<id>:d“ / „<id>:h“
     let pos = START_MM; // Lage des Maßbands (mm, stufenlos); der Wert ist die gerundete Lage
+
+    const stelleVon = f => st.find(s => f.startsWith(`${s.id}:`));
+    const lies = f => { const s = stelleVon(f); return s ? s[f.slice(-1)] : mm[f]; };
+    const schreib = (f, v) => { const s = stelleVon(f); if (s) s[f.slice(-1)] = v; else mm[f] = v; };
+    const feldName = f => {
+      const s = stelleVon(f);
+      if (!s) return GRUNDMASSE.find(m => m[0] === f)[1];
+      return f.endsWith(':d') ? `Ø ${stelleName(st, s)}` : `Höhe ${stelleName(st, s)}`;
+    };
 
     const dlg = document.createElement('dialog');
     dlg.className = 'masse';
@@ -90,14 +131,20 @@ export function masseAbfragen(werte = {}) {
             <div class="masse-inhalt">
               ${SKIZZE}
               <ul class="masse-liste">
-                ${GRUNDMASSE.map(([k, label]) => `<li><button type="button" class="masse-zeile" data-k="${k}" aria-pressed="false">
+                ${GRUNDMASSE.map(([k, label]) => `<li><button type="button" class="masse-zeile" data-f="${k}" aria-pressed="false">
                   <span class="masse-name">${label}</span><span class="masse-wert"></span></button></li>`).join('')}
               </ul>
+            </div>
+            <ul class="masse-stellen"></ul>
+            <div class="masse-plus">
+              <button type="button" class="plus-knopf" aria-label="Stelle hinzufügen" aria-expanded="false">${PLUS}</button>
+              <div class="plus-wahl" hidden>
+                ${STELLEN_ARTEN.map(([art, label]) => `<button type="button" data-art="${art}">${label}</button>`).join('')}
+              </div>
             </div>
             <p class="hint masse-tipp">Tippe ein Maß an.</p>
             <div class="sheet-buttons">
               <button type="button" class="btn primary" data-ende="ok">Übernehmen</button>
-              <button type="button" class="btn" data-ende="spaeter">Überspringen</button>
             </div>
           </div>
         </div>
@@ -108,23 +155,64 @@ export function masseAbfragen(werte = {}) {
     document.body.append(dlg);
 
     const rand = zufall(Date.now());
-    dlg.querySelector('.fetzen').style.clipPath = riss(rand, 3);
-    dlg.querySelector('.fetzen-rand').style.clipPath = riss(rand, 0);
+    const fetzen = dlg.querySelector('.fetzen');
+    const fetzenRand = dlg.querySelector('.fetzen-rand');
+    // Risskante passend zur Größe des Zettels (er wächst mit den Stellen)
+    const reissen = () => {
+      fetzen.style.clipPath = riss(rand, 3);
+      fetzenRand.style.clipPath = riss(rand, 0);
+    };
+    reissen();
 
     const band = dlg.querySelector('.massband');
     const canvas = band.querySelector('canvas');
     const ctx = canvas.getContext('2d');
     const tipp = dlg.querySelector('.masse-tipp');
-    const zeile = k => dlg.querySelector(`.masse-zeile[data-k="${k}"]`);
+    const stellenListe = dlg.querySelector('.masse-stellen');
+    const plusKnopf = dlg.querySelector('.plus-knopf');
+    const plusWahl = dlg.querySelector('.plus-wahl');
+    const feld = f => dlg.querySelector(`[data-f="${f}"]`);
 
-    const zeigeWert = k => {
-      zeile(k).querySelector('.masse-wert').textContent = mm[k] == null ? '–' : cmText(mm[k]);
-      if (k === aktiv) {
-        canvas.setAttribute('aria-valuenow', String(mm[k] / 10));
-        canvas.setAttribute('aria-valuetext', cmText(mm[k]));
+    const zeigeWert = f => {
+      const el = feld(f)?.querySelector('.masse-wert');
+      if (!el) return;
+      const v = lies(f);
+      el.textContent = v == null ? '–' : cmText(v);
+      if (f === aktiv) {
+        canvas.setAttribute('aria-valuenow', String(v / 10));
+        canvas.setAttribute('aria-valuetext', cmText(v));
       }
     };
+
+    const zeigeStellen = () => {
+      stellenListe.innerHTML = st.map(s => `<li class="stelle" data-id="${s.id}">
+        <span class="masse-name">${stelleName(st, s)}</span>
+        <button type="button" class="stelle-feld" data-f="${s.id}:d" aria-pressed="false" aria-label="Durchmesser ${stelleName(st, s)}"><small>Ø</small><span class="masse-wert"></span></button>
+        <button type="button" class="stelle-feld" data-f="${s.id}:h" aria-pressed="false" aria-label="Höhe vom Boden ${stelleName(st, s)}"><small>auf Höhe</small><span class="masse-wert"></span></button>
+        <button type="button" class="muell" data-weg="${s.id}" aria-label="${stelleName(st, s)} löschen">${MUELL}</button>
+      </li>`).join('');
+      for (const s of st) { zeigeWert(`${s.id}:d`); zeigeWert(`${s.id}:h`); }
+      markieren();
+      reissen();
+    };
+
+    // gewähltes Feld hervorheben und in der Skizze zeigen
+    const markieren = () => {
+      for (const b of dlg.querySelectorAll('[data-f]')) b.setAttribute('aria-pressed', String(b.dataset.f === aktiv));
+      const s = aktiv && stelleVon(aktiv);
+      for (const g of dlg.querySelectorAll('.masse-skizze .mass')) g.classList.toggle('an', s ? g.dataset.mass === 'stelle' : g.dataset.mass === aktiv);
+      if (s) {
+        const H = mm.hoehe || Math.max(100, s.h + 20);
+        const y = Math.max(20, Math.min(96, 98 - (s.h / H) * 80));
+        const b = topfBreite(y);
+        dlg.querySelector('[data-mass="stelle"] path').setAttribute('d', aktiv.endsWith(':d')
+          ? `M${50 - b} ${y}H${50 + b}M${50 - b} ${y - 4}V${y + 4}M${50 + b} ${y - 4}V${y + 4}`
+          : `M7 ${y}V98M3 ${y}H11M3 98H11M11 ${y}H${50 - b}`);
+      }
+    };
+
     for (const [k] of GRUNDMASSE) zeigeWert(k);
+    zeigeStellen();
 
     // ---------- Zeichnen ----------
     let geplant = false;
@@ -194,36 +282,71 @@ export function masseAbfragen(werte = {}) {
     const setze = neu => {
       pos = Math.max(MIN_MM, Math.min(MAX_MM, neu));
       const wert = Math.round(pos);
-      if (aktiv && wert !== mm[aktiv]) {
+      const alt = aktiv ? lies(aktiv) : null;
+      if (aktiv && wert !== alt) {
         // beim Überschreiten eines Zentimeters ganz leicht vibrieren
-        if (mm[aktiv] != null && Math.floor(wert / 10) !== Math.floor(mm[aktiv] / 10)) navigator.vibrate?.(4);
-        mm[aktiv] = wert;
+        if (alt != null && Math.floor(wert / 10) !== Math.floor(alt / 10)) navigator.vibrate?.(4);
+        schreib(aktiv, wert);
         zeigeWert(aktiv);
+        if (stelleVon(aktiv) || aktiv === 'hoehe') markieren();
       }
       zeichnenBald();
     };
 
-    const waehle = k => {
-      aktiv = k;
-      if (mm[k] == null) mm[k] = START_MM;
-      pos = mm[k];
+    const bandZu = () => {
+      aktiv = null;
+      band.classList.remove('offen');
+      band.setAttribute('aria-hidden', 'true');
+      canvas.tabIndex = -1;
+      tipp.textContent = 'Tippe ein Maß an.';
+      markieren();
+    };
+
+    const waehle = f => {
+      aktiv = f;
+      if (lies(f) == null) schreib(f, START_MM);
+      pos = lies(f);
       schwung = 0;
-      for (const [x] of GRUNDMASSE) {
-        zeile(x).setAttribute('aria-pressed', String(x === k));
-        dlg.querySelector(`.masse-skizze [data-mass="${x}"]`).classList.toggle('an', x === k);
-      }
-      zeigeWert(k);
-      canvas.setAttribute('aria-label', `Maßband: ${GRUNDMASSE.find(m => m[0] === k)[1]}`);
+      markieren();
+      zeigeWert(f);
+      canvas.setAttribute('aria-label', `Maßband: ${feldName(f)}`);
       canvas.tabIndex = 0;
       band.removeAttribute('aria-hidden');
       band.classList.add('offen');
-      tipp.textContent = 'Maßband nach links wischen: größer, nach rechts: kleiner. Langsam wischen für Millimeter.';
+      const s = stelleVon(f);
+      tipp.textContent = s && f.endsWith(':h')
+        ? `Höhe vom Boden bis ${s.art === 'bauch' ? 'zum' : 'zur'} ${stelleName(st, s)}. Maßband nach links wischen: größer, nach rechts: kleiner.`
+        : 'Maßband nach links wischen: größer, nach rechts: kleiner. Langsam wischen für Millimeter.';
       zeichnenBald();
     };
 
-    dlg.querySelector('.masse-liste').addEventListener('click', e => {
-      const b = e.target.closest('.masse-zeile');
-      if (b) waehle(b.dataset.k);
+    fetzen.addEventListener('click', e => {
+      const b = e.target.closest('[data-f]');
+      if (b) return waehle(b.dataset.f);
+      const weg = e.target.closest('[data-weg]');
+      if (weg) {
+        const i = st.findIndex(s => s.id === weg.dataset.weg);
+        if (aktiv && stelleVon(aktiv) === st[i]) bandZu();
+        st.splice(i, 1);
+        zeigeStellen();
+        return;
+      }
+      if (e.target.closest('.plus-knopf')) {
+        plusWahl.hidden = !plusWahl.hidden;
+        plusKnopf.setAttribute('aria-expanded', String(!plusWahl.hidden));
+        reissen();
+        return;
+      }
+      const art = e.target.closest('[data-art]');
+      if (art) {
+        const s = { id: neueId(), art: art.dataset.art, d: START_MM, h: START_MM };
+        st.push(s);
+        plusWahl.hidden = true;
+        plusKnopf.setAttribute('aria-expanded', 'false');
+        zeigeStellen();
+        waehle(`${s.id}:d`);
+        feld(`${s.id}:d`).focus();
+      }
     });
 
     // ---------- Wischen ----------
@@ -266,7 +389,7 @@ export function masseAbfragen(werte = {}) {
       const schritt = t => {
         const dt = Math.min(50, t - t0);
         t0 = t;
-        if (zug) return;
+        if (zug || !aktiv) return;
         if (schwung) {
           setze(pos + schwung * dt);
           schwung *= 0.985 ** dt;
@@ -294,7 +417,7 @@ export function masseAbfragen(werte = {}) {
     // Pfeiltasten: 1 mm, mit Umschalt 1 cm
     dlg.addEventListener('keydown', e => {
       if (!aktiv || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
-      if (e.target.closest('.masse-zeile') === null && e.target !== canvas) return;
+      if (!e.target.closest('[data-f]') && e.target !== canvas) return;
       e.preventDefault();
       const s = (e.key === 'ArrowRight' || e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 10 : 1);
       schwung = 0;
@@ -305,23 +428,20 @@ export function masseAbfragen(werte = {}) {
     window.addEventListener('resize', onResize);
 
     // ---------- Ende ----------
-    dlg.addEventListener('click', e => {
-      const b = e.target.closest('[data-ende]');
-      if (b) dlg.close(b.dataset.ende);
-    });
+    dlg.querySelector('[data-ende="ok"]').addEventListener('click', () => dlg.close('ok'));
     dlg.addEventListener('close', () => {
       cancelAnimationFrame(lauf);
       window.removeEventListener('resize', onResize);
       let res = null;
       if (dlg.returnValue === 'ok') {
-        res = {};
-        for (const [k] of GRUNDMASSE) if (mm[k] != null && mm[k] !== start[k]) res[k] = mm[k] / 10;
+        res = { werte: {}, stellen: st.map(s => ({ id: s.id, art: s.art, d: s.d / 10, h: s.h / 10 })) };
+        for (const [k] of GRUNDMASSE) if (mm[k] != null && mm[k] !== start[k]) res.werte[k] = mm[k] / 10;
       }
       dlg.remove();
       resolve(res);
     });
     dlg.showModal();
-    // kein Eingabefeld: nicht gleich ein Maß fokussieren, sonst springt die Tastatur o. Ä. an
+    // kein Eingabefeld: nicht gleich ein Maß fokussieren
     dlg.querySelector('.fetzen h2').tabIndex = -1;
     dlg.querySelector('.fetzen h2').focus();
   });

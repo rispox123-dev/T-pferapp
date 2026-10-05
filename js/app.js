@@ -3,6 +3,7 @@ import { processImage, blobToDataUrl, dataUrlToBlob, brennweiteAusExif } from '.
 import { findPoints, abgleich, renderBlueprint, hashSeed, alteWerte, istAutoName } from './blueprint.js';
 import { analyze, loadForAnalysis, cropFromGuide, DEFAULT_SENS } from './erkennung.js';
 import { gefuehrteAufnahme, kameraVerfuegbar, GRUPPEN } from './kamera.js';
+import { masseAbfragen } from './massband.js';
 
 // ---------------------------------------------------------------------------
 // Fachliche Listen
@@ -252,8 +253,8 @@ async function handleFiles(input, onId) {
   }
 }
 
-// Mehrere Fotos (Werkstück)
-function mountMultiPhoto(container, ids, session) {
+// Mehrere Fotos (Werkstück); onAdded: nach jedem neu hinzugefügten Foto (bzw. jeder Auswahl)
+function mountMultiPhoto(container, ids, session, onAdded) {
   const render = () => {
     container.innerHTML = `<div class="photo-picker">
       ${ids.map(id => `<div class="pp-item">${thumb(id, { zoom: true })}<button type="button" class="pp-remove" data-id="${id}" aria-label="Foto entfernen">×</button></div>`).join('')}
@@ -280,11 +281,14 @@ function mountMultiPhoto(container, ids, session) {
         ids.unshift(id); // das Blaupausen-Foto zuerst
         session.add(id);
         render();
+        onAdded?.();
       });
     } else if (pick) container.querySelector(pick.dataset.pick === 'cam' ? '.pp-cam' : '.pp-lib').click();
   });
   container.addEventListener('change', e => {
-    if (e.target.type === 'file') handleFiles(e.target, id => { ids.push(id); session.add(id); render(); });
+    if (e.target.type !== 'file') return;
+    let neu = 0;
+    handleFiles(e.target, id => { ids.push(id); session.add(id); neu++; render(); }).then(() => { if (neu) onAdded?.(); });
   });
   render();
 }
@@ -557,10 +561,14 @@ async function viewPieceForm(id, params) {
     </div>
   </form>`;
 
-  mountMultiPhoto($app.querySelector('#photos'), photos, session);
+  const form = $app.querySelector('#f');
+  // Nach dem Foto die vier Grundmaße abfragen – damit wird die Blaupause am genauesten
+  mountMultiPhoto($app.querySelector('#photos'), photos, session, async () => {
+    const res = await masseAbfragen(Object.fromEntries(MASSE.map(([k]) => [k, numVal(form, `nass.${k}`)])));
+    for (const [k, v] of Object.entries(res || {})) form.elements[`nass.${k}`].value = v;
+  });
   mountRepeat($app.querySelector('#extra'), extra, { labelA: 'Bezeichnung', labelB: 'Wert', addLabel: 'Angabe hinzufügen' });
 
-  const form = $app.querySelector('#f');
   $app.querySelector('#cancel').onclick = () => $back.click();
   form.onsubmit = async e => {
     e.preventDefault();
@@ -837,6 +845,8 @@ async function viewBlueprintEditor(id) {
     const fid = await blaupausenFoto({ galerie: null });
     if (!fid) return null;
     p.photos = [fid, ...(p.photos || [])];
+    const res = await masseAbfragen(Object.fromEntries(MASSE.map(([k]) => [k, p.nass?.[k]])));
+    if (res) p.nass = { ...(p.nass || {}), ...res };
     p.updatedAt = new Date().toISOString();
     await db.put('pieces', p);
     return fid;

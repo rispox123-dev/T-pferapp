@@ -42,6 +42,9 @@ Unten wechselst du zwischen **Töpfern**, **Glasieren**, **Glasuren** und **Mehr
 
 ### 3. Glasuren – Rezepte und Auswertung
 - Rezept (Rohstoffe und Anteile), Brennbereich, Litergewicht, Foto der Testkachel
+- **Rezept vom Foto**: Oben im Glasur-Formular ein Rezept fotografieren (**Foto**) oder ein Bild wählen (**Galerie**) – aus einem Buch, von einem Zettel, einem Bildschirmfoto. Die App liest Name, Beschreibung, Brennbereich (Temperatur, Kegel, oxidierend/reduzierend), Litergewicht, Rohstoffe mit Anteilen und Zusätze (z. B. „Zusätze:“, „+ Eisenoxid 2“, „Add:“); übriger Text kommt in die Notizen. Die Texterkennung läuft **auf dem Handy**, das Foto verlässt das Gerät nicht. Funktioniert auch mit Tabellen (Rohstoff links, Menge rechts), Mengen vorn („20 Silica“), schräg oder quer gehaltenem Handy und Schatten auf dem Blatt; deutliche Handschrift geht oft, gedruckt gelingt am besten
+- **Nachfragen statt raten**: Vor dem Eintragen erscheint ein Zettel mit allem Gelesenen. Wo die App unsicher ist, ist die Stelle markiert, mit dem **Bildausschnitt aus dem Foto** und dem Grund – schlecht lesbar, Schreibweise korrigiert („gelesen: Kalifeldspal“), Menge fehlt, Zahl unklar („1,5 oder 15?“ – jede Zahl wird zur Gegenprobe ein zweites Mal gelesen), Summe ergibt nicht 100, ungewöhnlich viel Färbeoxid („fehlt ein Komma?“), steht schon etwas anderes im Formular, Rezept ersetzen oder anhängen. Ändern oder „Stimmt so“ antippen; erst wenn alle Fragen beantwortet sind, lässt sich übernehmen. Anteile werden auch hier mit dem Maßband eingestellt
+- Zusätze stehen im Rezept mit **+** davor und zählen nicht zur Summe. Das Foto des Rezepts wird mit der Glasur gespeichert
 - **Auswertung**: alle Stücke mit dieser Glasur, sortiert nach Tauchdauer, mit Vorher-/Nachher-Fotos und Ergebnis
 
 ### Werte mit dem Maßband einstellen
@@ -93,6 +96,9 @@ npx http-server -p 8080
 | `js/formprior.js` | Formwissen: Kontur an die gelernten Formfamilien anpassen, verdeckte Stellen vorhersagen |
 | `js/formen-modell.js` | Gelernte Formmodelle (automatisch erzeugt) |
 | `js/blueprint.js` | Markante Stellen, Maße schätzen, Zeichnung der Blaupause |
+| `js/rezept.js` | Rezept aus dem erkannten Text: Zeilen zusammensetzen (auch spaltenweise gelesene Tabellen, schräge Fotos), Rohstoff-Wörterbuch, Mengen, Brennbereich, Litergewicht, Prüfungen und Gründe für Nachfragen |
+| `js/rezept-foto.js` | Rezept vom Foto: Licht ausgleichen, Texterkennung (mit Gegenprobe der Zahlen), Zettel zum Prüfen |
+| `vendor/tesseract/` | Texterkennung [Tesseract.js](https://github.com/naptha/tesseract.js) 6.0.1 mit Sprachdaten Deutsch und Englisch (Apache-2.0); wird erst beim ersten Rezeptfoto geladen und dann offline behalten |
 | `sw.js` | Offline-Betrieb (bei Änderungen `CACHE`-Version erhöhen) |
 | `css/style.css` | Gestaltung (hell und dunkel) |
 
@@ -109,6 +115,7 @@ node tools/test/app-test.mjs             # Ende-zu-Ende im Browser mit simuliert
 node tools/test/massband-test.mjs        # Maßband: Startwert, 1-mm-genaues und schnelles Wischen, Übernahme, Blaupause, Skizzenbuch-Ansicht
 node tools/test/werte-test.mjs           # alle Zahlen der Formulare mit dem Maßband (Werkstück, Glasurprotokoll, Glasur)
 node tools/test/umblaettern-test.mjs     # Umblättern per Wischen am Rand, Skizzen auf dem Blatt (nicht schwarz)
+node tools/test/rezept-foto-test.mjs     # Rezept vom Foto: gedruckt, schräg mit Schatten, englisch, Handschrift quer, Nachfragen, Übernahme
 ```
 
 - `tools/formen/typologie.mjs` – Formfamilien gedrehter Gefäße (Proportionen, Fuß, Bauch, Taille, Schulter, Hals, Lippe)

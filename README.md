@@ -42,6 +42,9 @@ Eine Handy-App für Töpferinnen und Töpfer, die eigene Stücke töpfern und ei
 - Rezept (Rohstoffe und Anteile), Brennbereich, Litergewicht, Foto der Testkachel
 - **Auswertung**: alle Stücke mit dieser Glasur, sortiert nach Tauchdauer, mit Vorher-/Nachher-Fotos und Ergebnis
 
+### Werte mit dem Maßband einstellen
+Zahlen werden nirgends getippt: Ein Wert (Tonmenge, Maße nass und nach dem Brand, Wand- und Bodenstärke, Gewicht, Tauchdauer, Wiederholungen, Pause, Litergewicht, Brenntemperatur, Haltezeit, Anteile im Glasurrezept) wird angetippt, dann erscheint der Zettel mit allen Werten, die zusammengehören (z. B. alle vier Maße nach dem Brand mit der Topfskizze), und unten das **Maßband**. Jede Einheit hat ihre eigene Skala: Zentimeter und Millimeter auf 0,1 genau, Gramm und g/l in 1er-Schritten, Sekunden in halben Schritten, °C ab 500 mit Startwert 1240 °C. Langsam wischen für feine Schritte, schnell wischen für große Sprünge; der **Radiergummi** löscht einen Wert.
+
 ### Daten
 Alle Daten und Fotos bleiben **auf deinem Handy**. Es gibt keinen Server und kein Konto.
 Unter **Mehr → Sicherung erstellen** speicherst du alles in einer Datei (am besten regelmäßig!).
@@ -102,6 +105,7 @@ node tools/test/blaupausen.mjs 6         # Testfotos und Blaupausen nebeneinande
 node tools/test/henkel-ecken.mjs 40      # Henkel (wie viel erfasst) und obere Ecken an Bechern/Tassen, mit --unschaerfe
 node tools/test/app-test.mjs             # Ende-zu-Ende im Browser mit simulierter Kamera, Vollbild, Zoom, Henkel-Werkzeug
 node tools/test/massband-test.mjs        # Maßband: Startwert, 1-mm-genaues und schnelles Wischen, Übernahme, Blaupause, Skizzenbuch-Ansicht
+node tools/test/werte-test.mjs           # alle Zahlen der Formulare mit dem Maßband (Werkstück, Glasurprotokoll, Glasur)
 ```
 
 - `tools/formen/typologie.mjs` – Formfamilien gedrehter Gefäße (Proportionen, Fuß, Bauch, Taille, Schulter, Hals, Lippe)

@@ -2,8 +2,9 @@
 // breitester Stelle und Fuß. Ein Maß antippen → am unteren Rand erscheint ein Maßband.
 // Wischen von rechts nach links vergrößert den Wert, von links nach rechts verkleinert ihn.
 // Langsam gewischt ist ein Teilstrich ein Millimeter; je schneller, desto größer die Sprünge.
-// Dasselbe Maßband dient überall, wo Größen eingetragen werden (massAbfragen: einzelne Maße
-// der Blaupause, mit Schätzung aus dem Foto als Startwert).
+// Dasselbe Maßband dient überall in der App, wo Werte eingestellt werden (massAbfragen: einzelne
+// Maße der Blaupause mit der Schätzung aus dem Foto als Startwert, Gewichte, Zeiten, Temperatur …);
+// jede Einheit hat ihre eigene Skala (SKALEN).
 
 export const GRUNDMASSE = [
   ['hoehe', 'Höhe'],
@@ -12,15 +13,45 @@ export const GRUNDMASSE = [
   ['dBoden', 'Ø Fuß'],
 ];
 
+// Skalen des Maßbands. Ein Teilstrich ist ein Schritt; jeder „gross“-te Strich ist lang und
+// beschriftet (beim Überschreiten vibriert es leicht), jeder „mittel“-te halblang. px: Abstand
+// der Teilstriche; schnell: größte Verstärkung beim schnellen Wischen (lange Skalen mehr);
+// fest: Nachkommastellen, die immer gezeigt werden; start: Startwert ohne Eintrag.
+export const SKALEN = {
+  cm: { einheit: 'cm', schritt: 0.1, fest: 1, gross: 10, mittel: 5, px: 8, min: 0.1, max: 100, start: 5 },
+  mm: { einheit: 'mm', schritt: 0.1, fest: 1, gross: 10, mittel: 5, px: 8, min: 0.1, max: 50, start: 5 },
+  g: { einheit: 'g', schritt: 1, gross: 10, mittel: 5, px: 8, min: 1, max: 20000, start: 500, schnell: 40 },
+  gl: { einheit: 'g/l', schritt: 1, gross: 10, mittel: 5, px: 8, min: 1000, max: 2500, start: 1450, schnell: 20 },
+  sek: { einheit: 'Sek.', schritt: 0.5, gross: 2, px: 20, min: 0, max: 600, start: 3 },
+  mal: { einheit: '×', schritt: 1, gross: 1, px: 48, min: 1, max: 30, start: 1, schnell: 3 },
+  grad: { einheit: '°C', schritt: 1, gross: 10, mittel: 5, px: 8, min: 500, max: 1400, start: 1240, schnell: 20 },
+  min: { einheit: 'min', schritt: 1, gross: 5, px: 14, min: 0, max: 600, start: 10 },
+  anteil: { einheit: '', schritt: 0.1, gross: 10, mittel: 5, px: 8, min: 0, max: 1000, start: 10, schnell: 20 },
+};
+
+const skalaVon = s => (typeof s === 'string' ? SKALEN[s] : s) || SKALEN.cm;
+const stellenVon = x => (String(x).split('.')[1] || '').length;
+// Wert ↔ Teilstriche (ganze Zahl); leer, 0 bei Skalen ohne 0 oder keine Zahl → null
+export function zuStrichen(v, skala) {
+  const sk = skalaVon(skala);
+  const n = typeof v === 'string' ? Number(v.replace(',', '.')) : Number(v);
+  if (v == null || v === '' || !Number.isFinite(n) || (sk.min > 0 && n <= 0)) return null;
+  return Math.round(n / sk.schritt);
+}
+const ausStrichen = (t, skala) => Math.round(t * skalaVon(skala).schritt * 1000) / 1000;
+const zahlText = (v, sk) => v.toLocaleString('de-DE', { useGrouping: false, minimumFractionDigits: sk.fest || 0, maximumFractionDigits: Math.max(sk.fest || 0, stellenVon(sk.schritt)) });
+// „6,3 cm“, „3,5 Sek.“, „1240 °C“
+export function wertText(v, skala) {
+  const sk = skalaVon(skala);
+  return `${zahlText(Number(v), sk)}${sk.einheit ? ` ${sk.einheit}` : ''}`;
+}
+
+// Grundmaße und Stellen auf dem Zettel: Zentimeter, ein Teilstrich = 1 mm
 const START_MM = 50; // 5 cm
-const MIN_MM = 1;
-const MAX_MM = 1000;
-const PX_JE_MM = 8; // Abstand der Millimeterstriche auf dem Maßband
+const cmText = mm => wertText(mm / 10, SKALEN.cm);
 
-// Verstärkung nach Wischgeschwindigkeit (px/ms): langsam genau 1:1, schnell bis 12-fach
-const verstaerkung = v => (v <= 0.3 ? 1 : Math.min(12, 1 + 2.5 * ((v - 0.3) / 0.5) ** 1.5));
-
-const cmText = mm => `${(mm / 10).toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} cm`;
+// Verstärkung nach Wischgeschwindigkeit (px/ms): langsam genau 1:1, schnell bis max-fach
+const verstaerkung = (v, max = 12) => (v <= 0.3 ? 1 : Math.min(max, 1 + 2.5 * ((v - 0.3) / 0.5) ** 1.5 * (max / 12)));
 
 // gleichbleibendes „Zittern“ der Bleistiftstriche je Millimeter
 const zitter = n => { const s = Math.sin(n * 12.9898) * 43758.5453; return s - Math.floor(s); };
@@ -117,7 +148,7 @@ function zettelDialog(titel, inhalt) {
       </div>
     </div>
     <div class="massband" aria-hidden="true">
-      <canvas role="slider" tabindex="-1" aria-label="Maßband" aria-valuemin="${MIN_MM / 10}" aria-valuemax="${MAX_MM / 10}"></canvas>
+      <canvas role="slider" tabindex="-1" aria-label="Maßband"></canvas>
     </div>`;
   document.body.append(dlg);
   const rand = zufall(Date.now());
@@ -154,18 +185,21 @@ function skizzeMarkieren(svg, mass, stelle) {
 }
 
 // Das Maßband am unteren Rand eines Zettels: Zeichnen, Wischen mit Nachlauf, Mausrad,
-// Pfeiltasten. aendern(mm) wird bei jedem neuen (auf den Millimeter gerundeten) Wert gerufen.
+// Pfeiltasten. aendern(t) wird bei jedem neuen (auf den Teilstrich gerundeten) Wert gerufen;
+// t zählt Teilstriche der gerade gezeigten Skala (bei Zentimetern also Millimeter).
 function massbandAnbringen(dlg, aendern) {
   const band = dlg.querySelector('.massband');
   const canvas = band.querySelector('canvas');
   const ctx = canvas.getContext('2d');
   let an = false;     // Maßband offen
-  let pos = START_MM; // Lage des Maßbands (mm, stufenlos); der Wert ist die gerundete Lage
-  let wert = null;    // zuletzt gemeldeter Wert (mm)
+  let sk = SKALEN.cm; // gezeigte Skala
+  let minT = 1, maxT = 1000; // Grenzen in Teilstrichen
+  let pos = START_MM; // Lage des Maßbands (Teilstriche, stufenlos); der Wert ist die gerundete Lage
+  let wert = null;    // zuletzt gemeldeter Wert (Teilstriche)
 
   const zeigeWert = () => {
-    canvas.setAttribute('aria-valuenow', String(wert / 10));
-    canvas.setAttribute('aria-valuetext', cmText(wert));
+    canvas.setAttribute('aria-valuenow', String(ausStrichen(wert, sk)));
+    canvas.setAttribute('aria-valuetext', wertText(ausStrichen(wert, sk), sk));
   };
 
   // ---------- Zeichnen ----------
@@ -190,8 +224,8 @@ function massbandAnbringen(dlg, aendern) {
     ctx.setTransform(d, 0, 0, d, 0, 0);
     ctx.clearRect(0, 0, w, h);
     const mitte = w / 2;
-    const von = Math.max(0, Math.floor(pos - mitte / PX_JE_MM) - 1);
-    const bis = Math.min(MAX_MM, Math.ceil(pos + mitte / PX_JE_MM) + 1);
+    const von = Math.max(minT, Math.floor(pos - mitte / sk.px) - 1);
+    const bis = Math.min(maxT, Math.ceil(pos + mitte / sk.px) + 1);
     const schrift = Math.round(Math.max(15, Math.min(24, h * 0.2)));
     ctx.font = `${schrift}px "Bleistift Hand", "Patrick Hand", cursive`;
     ctx.textAlign = 'center';
@@ -199,8 +233,8 @@ function massbandAnbringen(dlg, aendern) {
     ctx.lineCap = 'round';
     ctx.strokeStyle = ctx.fillStyle = stift;
     for (let n = von; n <= bis; n++) {
-      const x = mitte + (n - pos) * PX_JE_MM;
-      const cm = n % 10 === 0, halb = n % 5 === 0;
+      const x = mitte + (n - pos) * sk.px;
+      const cm = n % sk.gross === 0, halb = !!sk.mittel && n % sk.mittel === 0;
       const z = zitter(n);
       const lang = h * (cm ? 0.36 : halb ? 0.25 : 0.15) + (z - 0.5) * 2.5;
       ctx.globalAlpha = cm ? 0.85 : halb ? 0.65 : 0.42 + z * 0.12;
@@ -211,7 +245,7 @@ function massbandAnbringen(dlg, aendern) {
       ctx.stroke();
       if (cm) {
         ctx.globalAlpha = 0.8;
-        ctx.fillText(String(n / 10), x, lang + 5);
+        ctx.fillText(zahlText(ausStrichen(n, sk), { schritt: sk.gross * sk.schritt }), x, lang + 5);
       }
     }
     // Ablesemarke in der Mitte
@@ -234,11 +268,11 @@ function massbandAnbringen(dlg, aendern) {
 
   // ---------- Wert ändern ----------
   const setze = neu => {
-    pos = Math.max(MIN_MM, Math.min(MAX_MM, neu));
+    pos = Math.max(minT, Math.min(maxT, neu));
     const w = Math.round(pos);
     if (an && w !== wert) {
-      // beim Überschreiten eines Zentimeters ganz leicht vibrieren
-      if (wert != null && Math.floor(w / 10) !== Math.floor(wert / 10)) navigator.vibrate?.(4);
+      // beim Überschreiten eines beschrifteten Strichs (z. B. eines Zentimeters) leicht vibrieren
+      if (wert != null && Math.floor(w / sk.gross) !== Math.floor(wert / sk.gross)) navigator.vibrate?.(4);
       wert = w;
       zeigeWert();
       aendern(w);
@@ -263,7 +297,7 @@ function massbandAnbringen(dlg, aendern) {
     const dx = e.clientX - zug.x;
     const dt = Math.max(1, e.timeStamp - zug.t);
     zug.v = zug.v * 0.6 + (Math.abs(dx) / dt) * 0.4;
-    const dmm = (-dx / PX_JE_MM) * verstaerkung(zug.v);
+    const dmm = (-dx / sk.px) * verstaerkung(zug.v, sk.schnell);
     zug.mmMs = zug.mmMs * 0.6 + (dmm / dt) * 0.4;
     zug.x = e.clientX;
     zug.t = e.timeStamp;
@@ -290,7 +324,7 @@ function massbandAnbringen(dlg, aendern) {
       if (schwung) {
         setze(pos + schwung * dt);
         schwung *= 0.985 ** dt;
-        if (Math.abs(schwung) < 0.005 || pos <= MIN_MM || pos >= MAX_MM) schwung = 0;
+        if (Math.abs(schwung) < 0.005 || pos <= minT || pos >= maxT) schwung = 0;
       } else {
         const ziel = Math.round(pos);
         if (Math.abs(ziel - pos) < 0.02) { setze(ziel); return; }
@@ -306,17 +340,18 @@ function massbandAnbringen(dlg, aendern) {
     if (!an) return;
     e.preventDefault();
     schwung = 0;
-    setze(pos + (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : -e.deltaY) / PX_JE_MM);
+    setze(pos + (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : -e.deltaY) / sk.px);
     clearTimeout(canvas.rast);
     canvas.rast = setTimeout(nachlauf, 120);
   }, { passive: false });
 
-  // Pfeiltasten (auf dem gewählten Maß oder dem Maßband): 1 mm, mit Umschalt 1 cm
+  // Pfeiltasten (auf dem gewählten Maß oder dem Maßband): ein Teilstrich (1 mm), mit Umschalt
+  // bis zum nächsten beschrifteten Strich weit (1 cm)
   dlg.addEventListener('keydown', e => {
     if (!an || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
     if (!e.target.closest('[data-f]') && e.target !== canvas) return;
     e.preventDefault();
-    const s = (e.key === 'ArrowRight' || e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 10 : 1);
+    const s = (e.key === 'ArrowRight' || e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? sk.gross : 1);
     schwung = 0;
     setze(Math.round(pos) + s);
   });
@@ -325,10 +360,15 @@ function massbandAnbringen(dlg, aendern) {
   window.addEventListener('resize', onResize);
 
   return {
-    // Maßband für ein Maß öffnen: Startwert (mm) und Name für Bildschirmleser
-    zeigen(mm, name) {
+    // Maßband für einen Wert öffnen: Startwert (Teilstriche), Name für Bildschirmleser, Skala
+    zeigen(t, name, skala = SKALEN.cm) {
       an = true;
-      pos = wert = Math.max(MIN_MM, Math.min(MAX_MM, Math.round(mm)));
+      sk = skalaVon(skala);
+      minT = zuStrichen(sk.min, { ...sk, min: 0 });
+      maxT = zuStrichen(sk.max, sk);
+      canvas.setAttribute('aria-valuemin', String(sk.min));
+      canvas.setAttribute('aria-valuemax', String(sk.max));
+      pos = wert = Math.max(minT, Math.min(maxT, Math.round(t)));
       schwung = 0;
       zeigeWert();
       canvas.setAttribute('aria-label', `Maßband: ${name}`);
@@ -351,13 +391,14 @@ function massbandAnbringen(dlg, aendern) {
   };
 }
 
-const WISCH_TIPP = 'Maßband nach links wischen: größer, nach rechts: kleiner. Langsam wischen für Millimeter.';
+const wischTipp = (sk = SKALEN.cm) => `Maßband nach links wischen: größer, nach rechts: kleiner. Langsam wischen für ${sk.einheit === 'cm' || sk.einheit === 'mm' ? 'Millimeter' : 'feine Schritte'}.`;
 
 // werte: { hoehe, dOben, dMax, dBoden } in cm (oder leer); stellen: [{ id, art, d, h }] in cm.
 // Ergebnis: { werte: geänderte Grundmaße in cm, stellen: alle Stellen in cm } oder null (Esc)
-export function masseAbfragen(werte = {}, stellen = []) {
+// waehlen: dieses Grundmaß gleich antippen (Maßband offen)
+export function masseAbfragen(werte = {}, stellen = [], { waehlen } = {}) {
   return new Promise(resolve => {
-    const zuMm = v => (v != null && v !== '' && Number(v) > 0 ? Math.round(Number(v) * 10) : null);
+    const zuMm = v => zuStrichen(v, SKALEN.cm);
     const start = {};
     const mm = {};
     for (const [k] of GRUNDMASSE) start[k] = mm[k] = zuMm(werte[k]);
@@ -453,7 +494,7 @@ export function masseAbfragen(werte = {}, stellen = []) {
       const s = stelleVon(f);
       tipp.textContent = s && f.endsWith(':h')
         ? `Höhe vom Boden bis ${s.art === 'bauch' ? 'zum' : 'zur'} ${stelleName(st, s)}. Maßband nach links wischen: größer, nach rechts: kleiner.`
-        : WISCH_TIPP;
+        : wischTipp();
     };
 
     fetzen.addEventListener('click', e => {
@@ -498,40 +539,48 @@ export function masseAbfragen(werte = {}, stellen = []) {
       resolve(res);
     });
     zettelZeigen(dlg);
+    if (waehlen && feld(waehlen)) { waehle(waehlen); feld(waehlen).focus(); }
   });
 }
 
-// Ein einzelnes Maß (oder Maß und Höhenlage) einer Stelle mit dem Maßband eintragen –
-// z. B. beim Antippen eines Maßes in der Blaupause.
+// Einen oder mehrere Werte mit dem Maßband einstellen – Maße der Blaupause, aber auch
+// Gewicht, Tauchdauer, Temperatur …
 //   titel:       Überschrift des Zettels (z. B. „Ø Taille“)
-//   felder:      [{ f, name, wert, schaetzung, skizze, leeren }] – Werte in cm; schaetzung wird
-//                als „≈“ gezeigt und ist der Startwert des Maßbands; skizze: 'hoehe', 'dOben',
-//                'dMax', 'dBoden' oder 'd' / 'h' (Ø bzw. Höhenlage einer Stelle); leeren: der
-//                Radiergummi löscht den Wert wieder
+//   felder:      [{ f, name, wert, skala, start, schaetzung, skizze, leeren }]
+//                skala: Schlüssel aus SKALEN (Vorgabe 'cm'); start: Startwert ohne Eintrag (sonst
+//                der der Skala); schaetzung wird als „≈“ gezeigt und ist dann der Startwert;
+//                skizze: 'hoehe', 'dOben', 'dMax', 'dBoden' oder 'd' / 'h' (Ø bzw. Höhenlage einer
+//                Stelle) – nur wenn alle Felder eine haben, steht die Skizze auf dem Zettel;
+//                leeren: der Radiergummi löscht den Wert wieder
+//   waehlen:     dieses Feld gleich antippen (Maßband offen)
+//   hinweis:     kleiner Text unter der Überschrift
 //   hoehe:       Höhe des Stücks in cm (für die Skizze)
 //   bezeichnung: Name der Stelle zum Ändern (undefined: kein Namensfeld)
 //   entfernen:   Beschriftung des Knopfs, der die Stelle löscht oder ausblendet
-// Ergebnis: { aktion: 'ok' | 'entfernen', werte: { f: cm oder null }, bezeichnung } oder null
-export function massAbfragen({ titel, felder, hoehe = null, bezeichnung, entfernen = '' }) {
+// Ergebnis: { aktion: 'ok' | 'entfernen', werte: { f: Wert oder null }, bezeichnung } oder null
+export function massAbfragen({ titel, felder, waehlen, hinweis = '', hoehe = null, bezeichnung, entfernen = '' }) {
   return new Promise(resolve => {
-    const zuMm = v => (v != null && v !== '' && Number(v) > 0 ? Math.round(Number(v) * 10) : null);
-    const mm = {};
-    const geaendert = new Set();
-    for (const fd of felder) mm[fd.f] = zuMm(fd.wert);
-    let aktiv = null;
     const fd = f => felder.find(x => x.f === f);
-    const ruhe = `Tippe ein Maß an.${felder.some(x => x.schaetzung > 0) ? ' Werte mit ≈ sind aus dem Foto geschätzt.' : ''}`;
+    const sk = f => skalaVon(fd(f).skala);
+    const t = {}; // Werte in Teilstrichen der jeweiligen Skala
+    const geaendert = new Set();
+    for (const x of felder) t[x.f] = zuStrichen(x.wert, x.skala);
+    const geschaetzt = f => zuStrichen(fd(f).schaetzung, fd(f).skala);
+    let aktiv = null;
+    const mitSkizze = felder.every(x => x.skizze);
+    const ruhe = `Tippe ${felder.length > 1 ? 'einen Wert' : 'den Wert'} an.${felder.some(x => x.schaetzung > 0) ? ' Werte mit ≈ sind aus dem Foto geschätzt.' : ''}`;
 
     const { dlg, fetzen } = zettelDialog(titel, `
       <h2>${escHtml(titel)}</h2>
+      ${hinweis ? `<p class="hint">${escHtml(hinweis)}</p>` : ''}
       ${bezeichnung !== undefined ? `<label class="field masse-bezeichnung"><span>Bezeichnung</span>
         <input name="bezeichnung" value="${escHtml(bezeichnung)}" placeholder="z. B. Ø untere Rille" autocomplete="off"></label>` : ''}
       <div class="masse-inhalt">
-        ${SKIZZE}
+        ${mitSkizze ? SKIZZE : ''}
         <ul class="masse-liste">
-          ${felder.map(x => `<li class="masse-einzeln"><button type="button" class="masse-zeile" data-f="${x.f}" aria-pressed="false">
+          ${felder.map(x => `<li class="masse-einzeln"><button type="button" class="masse-zeile" data-f="${escHtml(x.f)}" aria-pressed="false">
             <span class="masse-name">${escHtml(x.name)}</span><span class="masse-wert"></span></button>
-            ${x.leeren ? `<button type="button" class="radierer" data-leeren="${x.f}" aria-label="${escHtml(x.name)} löschen" hidden>${RADIERER}</button>` : ''}</li>`).join('')}
+            ${x.leeren ? `<button type="button" class="radierer" data-leeren="${escHtml(x.f)}" aria-label="${escHtml(x.name)} löschen" hidden>${RADIERER}</button>` : ''}</li>`).join('')}
         </ul>
       </div>
       <p class="hint masse-tipp">${ruhe}</p>
@@ -543,27 +592,29 @@ export function massAbfragen({ titel, felder, hoehe = null, bezeichnung, entfern
 
     const tipp = dlg.querySelector('.masse-tipp');
     const skizze = dlg.querySelector('.masse-skizze');
-    const feld = f => dlg.querySelector(`[data-f="${f}"]`);
+    const feld = f => [...dlg.querySelectorAll('[data-f]')].find(b => b.dataset.f === f);
 
     const zeigeWert = f => {
       const el = feld(f).querySelector('.masse-wert');
-      const s = fd(f).schaetzung;
-      el.classList.toggle('geschaetzt', mm[f] == null && s > 0);
-      el.textContent = mm[f] != null ? cmText(mm[f]) : s > 0 ? `≈ ${cmText(Math.round(s * 10))}` : '–';
-      const r = dlg.querySelector(`[data-leeren="${f}"]`);
-      if (r) r.hidden = mm[f] == null;
+      const s = geschaetzt(f);
+      el.classList.toggle('geschaetzt', t[f] == null && s != null);
+      el.textContent = t[f] != null ? wertText(ausStrichen(t[f], sk(f)), sk(f))
+        : s != null ? `≈ ${wertText(ausStrichen(s, sk(f)), sk(f))}` : '–';
+      const r = [...dlg.querySelectorAll('[data-leeren]')].find(b => b.dataset.leeren === f);
+      if (r) r.hidden = t[f] == null;
     };
 
-    // Lage einer Stelle für die Skizze: eingetragen, sonst geschätzt
+    // Lage einer Stelle für die Skizze (mm): eingetragen, sonst geschätzt
     const stelleMm = () => {
       const h = felder.find(x => x.skizze === 'h');
-      return h ? mm[h.f] ?? zuMm(h.schaetzung) : null;
+      return h ? t[h.f] ?? geschaetzt(h.f) : null;
     };
     const markieren = () => {
       for (const b of dlg.querySelectorAll('[data-f]')) b.setAttribute('aria-pressed', String(b.dataset.f === aktiv));
+      if (!skizze) return;
       // ohne gewähltes Maß das erste zeigen, damit klar ist, wo gemessen wird
       const art = fd(aktiv ?? felder[0].f).skizze;
-      const H = zuMm(hoehe);
+      const H = zuStrichen(hoehe, SKALEN.cm);
       const h = stelleMm() ?? (H ? H / 2 : START_MM);
       skizzeMarkieren(skizze, art === 'd' || art === 'h' ? 'stelle' : art, { was: art, h, H });
     };
@@ -572,7 +623,7 @@ export function massAbfragen({ titel, felder, hoehe = null, bezeichnung, entfern
     markieren();
 
     const band = massbandAnbringen(dlg, wert => {
-      mm[aktiv] = wert;
+      t[aktiv] = wert;
       geaendert.add(aktiv);
       zeigeWert(aktiv);
       markieren();
@@ -580,17 +631,17 @@ export function massAbfragen({ titel, felder, hoehe = null, bezeichnung, entfern
 
     const waehle = f => {
       aktiv = f;
-      if (mm[f] == null) {
-        // Startwert: die Schätzung aus dem Foto, sonst 5 cm
-        mm[f] = zuMm(fd(f).schaetzung) ?? START_MM;
+      if (t[f] == null) {
+        // Startwert: die Schätzung aus dem Foto, sonst der übliche Wert
+        t[f] = geschaetzt(f) ?? zuStrichen(fd(f).start ?? sk(f).start, { ...sk(f), min: 0 });
         geaendert.add(f);
       }
       zeigeWert(f);
       markieren();
-      band.zeigen(mm[f], fd(f).name);
+      band.zeigen(t[f], fd(f).name, sk(f));
       tipp.textContent = fd(f).skizze === 'h'
         ? 'Höhe vom Boden bis zu dieser Stelle. Maßband nach links wischen: größer, nach rechts: kleiner.'
-        : WISCH_TIPP;
+        : wischTipp(sk(f));
     };
 
     fetzen.addEventListener('click', e => {
@@ -599,7 +650,7 @@ export function massAbfragen({ titel, felder, hoehe = null, bezeichnung, entfern
       const r = e.target.closest('[data-leeren]');
       if (r) {
         const f = r.dataset.leeren;
-        mm[f] = null;
+        t[f] = null;
         geaendert.add(f);
         if (aktiv === f) {
           aktiv = null;
@@ -625,7 +676,9 @@ export function massAbfragen({ titel, felder, hoehe = null, bezeichnung, entfern
       if (aktion === 'ok' || aktion === 'entfernen') {
         const werte = {};
         // unverändert: der eingetragene Wert bleibt genau erhalten
-        for (const x of felder) werte[x.f] = geaendert.has(x.f) ? (mm[x.f] == null ? null : mm[x.f] / 10) : x.wert ?? null;
+        for (const x of felder) {
+          werte[x.f] = geaendert.has(x.f) ? (t[x.f] == null ? null : ausStrichen(t[x.f], x.skala)) : x.wert ?? null;
+        }
         const name = dlg.querySelector('[name="bezeichnung"]');
         res = { aktion, werte, bezeichnung: name ? name.value.trim() : undefined };
       }
@@ -633,5 +686,6 @@ export function massAbfragen({ titel, felder, hoehe = null, bezeichnung, entfern
       resolve(res);
     });
     zettelZeigen(dlg);
+    if (waehlen && fd(waehlen)) { waehle(waehlen); feld(waehlen).focus(); }
   });
 }

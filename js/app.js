@@ -3,7 +3,7 @@ import { processImage, blobToDataUrl, dataUrlToBlob, brennweiteAusExif } from '.
 import { findPoints, abgleich, estimate, renderBlueprint, hashSeed, alteWerte, istAutoName } from './blueprint.js';
 import { analyze, loadForAnalysis, cropFromGuide, DEFAULT_SENS } from './erkennung.js';
 import { gefuehrteAufnahme, kameraVerfuegbar, GRUPPEN } from './kamera.js';
-import { masseAbfragen, massAbfragen, stelleName } from './massband.js';
+import { masseAbfragen, massAbfragen, stelleName, wertText } from './massband.js';
 
 // ---------------------------------------------------------------------------
 // Fachliche Listen
@@ -186,12 +186,60 @@ document.addEventListener('click', e => {
 // Formular-Hilfen
 // ---------------------------------------------------------------------------
 
-function field(label, name, value, { type = 'text', unit = '', placeholder = '', list = '' } = {}) {
-  const numeric = type === 'number';
-  const input = `<input name="${name}" type="${type}" ${numeric ? 'inputmode="decimal" step="any" min="0"' : ''}
-    value="${esc(value)}" placeholder="${esc(placeholder)}" ${list ? `list="${list}"` : ''}>`;
-  return `<label class="field"><span>${esc(label)}</span>${unit ? `<span class="unit-input">${input}<em>${esc(unit)}</em></span>` : input}</label>`;
+function field(label, name, value, { type = 'text', placeholder = '', list = '' } = {}) {
+  return `<label class="field"><span>${esc(label)}</span><input name="${name}" type="${type}"
+    value="${esc(value)}" placeholder="${esc(placeholder)}" ${list ? `list="${list}"` : ''}></label>`;
 }
+
+// Zahlen werden nicht getippt, sondern mit dem Maßband eingestellt: Antippen öffnet den Zettel
+// mit allen Werten derselben Gruppe (z. B. alle Maße nach dem Brand). Der Wert selbst steht in
+// einem versteckten Feld, damit das Formular ihn wie jedes andere Feld liest.
+//   skala: Schlüssel aus SKALEN (massband.js); gruppe/titel: Werte, die zusammen auf einem Zettel
+//   stehen, und dessen Überschrift; skizze: Messlinie in der Topfskizze; start: Startwert
+function wertFeld(label, name, value, skala, { gruppe = name, titel = label, skizze = '', start = null } = {}) {
+  return `<div class="field wert-feld"><span>${esc(label)}</span>
+    <button type="button" class="wert-knopf" data-wert="${esc(name)}" data-skala="${skala}" data-gruppe="${esc(gruppe)}"
+      data-titel="${esc(titel)}" data-label="${esc(label)}"${skizze ? ` data-skizze="${skizze}"` : ''}${start != null ? ` data-start="${start}"` : ''}>${wertAnzeige(value, skala)}</button>
+    <input type="hidden" name="${esc(name)}" value="${isNum(value) ? esc(value) : ''}">
+  </div>`;
+}
+const wertAnzeige = (v, skala) => (isNum(v) ? esc(wertText(v, skala)) : '<span class="wert-leer">–</span>');
+const wertEingabe = knopf => knopf.closest('.wert-feld').querySelector('input[type="hidden"]');
+
+// Wert ins versteckte Feld schreiben und anzeigen (null: leer)
+function wertSetzen(eingabe, v) {
+  const knopf = eingabe.closest('.wert-feld').querySelector('[data-wert]');
+  eingabe.value = isNum(v) ? String(v) : '';
+  knopf.innerHTML = wertAnzeige(v, knopf.dataset.skala);
+  eingabe.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+// Zettel mit dem Maßband für die Gruppe des angetippten Werts (innerhalb einer Glasurschicht
+// bzw. des Formulars)
+async function wertEinstellen(knopf) {
+  const bereich = knopf.closest('.layer, form') || $app;
+  const knoepfe = [...bereich.querySelectorAll('[data-wert]')].filter(b => b.dataset.gruppe === knopf.dataset.gruppe);
+  const res = await massAbfragen({
+    titel: knopf.dataset.titel,
+    felder: knoepfe.map(b => ({
+      f: b.dataset.wert,
+      name: b.dataset.label,
+      wert: isNum(wertEingabe(b).value) ? Number(wertEingabe(b).value) : null,
+      skala: b.dataset.skala,
+      skizze: b.dataset.skizze,
+      start: isNum(b.dataset.start) ? Number(b.dataset.start) : undefined,
+      leeren: true,
+    })),
+    waehlen: knopf.dataset.wert,
+  });
+  if (!res) return;
+  for (const b of knoepfe) wertSetzen(wertEingabe(b), res.werte[b.dataset.wert]);
+}
+// ein eigener Abfrage-Weg (z. B. der Zettel mit den Stellen) verhindert das mit preventDefault
+$app.addEventListener('click', e => {
+  const knopf = e.target.closest('[data-wert]');
+  if (knopf && !e.defaultPrevented) wertEinstellen(knopf);
+});
 
 function selectField(label, name, value, options, { empty = '– bitte wählen –' } = {}) {
   const opts = options.map(o => (typeof o === 'string' ? { value: o, label: o } : o));
@@ -325,12 +373,14 @@ function mountSinglePhoto(container, state, key, session, placeholder) {
   render();
 }
 
-// Einfache Wiederhol-Zeilen (Name + Wert)
-function mountRepeat(container, rows, { labelA, labelB, typeB = 'text', addLabel, onChange }) {
+// Einfache Wiederhol-Zeilen (Name + Wert); skalaB: Wert als Zahl mit dem Maßband einstellen
+function mountRepeat(container, rows, { labelA, labelB, skalaB = '', addLabel, onChange }) {
   const render = () => {
     container.innerHTML = rows.map((r, i) => `<div class="repeat-row" data-i="${i}">
         <input data-k="a" value="${esc(r.a)}" placeholder="${esc(labelA)}" aria-label="${esc(labelA)}">
-        <input data-k="b" value="${esc(r.b)}" placeholder="${esc(labelB)}" aria-label="${esc(labelB)}" ${typeB === 'number' ? 'type="number" inputmode="decimal" step="any" min="0"' : ''}>
+        ${skalaB
+          ? `<button type="button" class="wert-knopf repeat-wert" aria-label="${esc(labelB)}">${isNum(r.b) ? esc(wertText(r.b, skalaB)) : `<span class="wert-leer">${esc(labelB)}</span>`}</button>`
+          : `<input data-k="b" value="${esc(r.b)}" placeholder="${esc(labelB)}" aria-label="${esc(labelB)}">`}
         <button type="button" class="remove-btn" aria-label="Zeile entfernen">×</button>
       </div>`).join('') + `<button type="button" class="btn small" data-add>${ICON_PLUS.replace('<svg', '<svg width="18" height="18"')} ${esc(addLabel)}</button>`;
     onChange?.();
@@ -341,7 +391,20 @@ function mountRepeat(container, rows, { labelA, labelB, typeB = 'text', addLabel
     rows[row.dataset.i][e.target.dataset.k] = e.target.value;
     onChange?.();
   });
-  container.addEventListener('click', e => {
+  container.addEventListener('click', async e => {
+    const wert = e.target.closest('.repeat-wert');
+    if (wert) {
+      const i = wert.closest('.repeat-row').dataset.i;
+      const res = await massAbfragen({
+        titel: String(rows[i].a).trim() || labelB,
+        felder: [{ f: 'b', name: labelB, wert: isNum(rows[i].b) ? Number(rows[i].b) : null, skala: skalaB, leeren: true }],
+        waehlen: 'b',
+      });
+      if (!res) return;
+      rows[i].b = res.werte.b ?? '';
+      render();
+      return;
+    }
     if (e.target.closest('[data-add]')) { rows.push({ a: '', b: '' }); render(); container.querySelector('.repeat-row:last-of-type input')?.focus(); }
     const rm = e.target.closest('.remove-btn');
     if (rm) { rows.splice(rm.closest('.repeat-row').dataset.i, 1); render(); }
@@ -595,7 +658,7 @@ async function viewPieceForm(id, params) {
     <div class="card">
       <h2>Ton</h2>
       <div class="fields-2">
-        ${field('Tonmenge', 'tonmenge', p.tonmenge, { type: 'number', unit: 'g' })}
+        ${wertFeld('Tonmenge', 'tonmenge', p.tonmenge, 'g')}
         ${field('Tonsorte', 'tonsorte', p.tonsorte, { placeholder: 'z. B. Steinzeug weiß', list: 'tonsorten' })}
       </div>
       <datalist id="tonsorten">${tonsorten.map(t => `<option value="${esc(t)}">`).join('')}</datalist>
@@ -603,8 +666,11 @@ async function viewPieceForm(id, params) {
 
     <div class="card">
       <h2>Maße nass / frisch gedreht</h2>
+      <div class="fields-2" id="nass-grund">
+        ${MASSE.map(([k, label]) => wertFeld(label, `nass.${k}`, nass[k], 'cm', { gruppe: 'nass', titel: 'Maße nass / frisch', skizze: k })).join('')}
+      </div>
       <div class="fields-2">
-        ${[...MASSE, ...MASSE_NUR_NASS].map(([k, label, unit]) => field(label, `nass.${k}`, nass[k], { type: 'number', unit })).join('')}
+        ${MASSE_NUR_NASS.map(([k, label]) => wertFeld(label, `nass.${k}`, nass[k], 'mm', { gruppe: 'staerke', titel: 'Wand- und Bodenstärke' })).join('')}
       </div>
       <div id="stellen"></div>
       <div class="btn-row" style="margin:8px 0 2px"><button type="button" class="btn small" id="zettel">Zettel öffnen: Maße &amp; Stellen</button></div>
@@ -614,8 +680,8 @@ async function viewPieceForm(id, params) {
       <h2>Maße nach dem Brand</h2>
       <p class="hint" style="margin-top:0">Optional – daraus berechnet die App die Schwindung deines Tons.</p>
       <div class="fields-2">
-        ${MASSE.map(([k, label, unit]) => field(label, `fertig.${k}`, fertig[k], { type: 'number', unit })).join('')}
-        ${field('Gewicht fertig', 'gewichtFertig', p.gewichtFertig, { type: 'number', unit: 'g' })}
+        ${MASSE.map(([k, label]) => wertFeld(label, `fertig.${k}`, fertig[k], 'cm', { gruppe: 'fertig', titel: 'Maße nach dem Brand', skizze: k })).join('')}
+        ${wertFeld('Gewicht fertig', 'gewichtFertig', p.gewichtFertig, 'g')}
       </div>
     </div>
 
@@ -641,16 +707,23 @@ async function viewPieceForm(id, params) {
   const zeigeStellen = () => { stellenEl.innerHTML = stellenListe(stellen); };
   zeigeStellen();
   // Grundmaße und eigene Stellen auf dem Zettel; Ergebnis direkt ins Formular
-  const zettelFormular = async () => {
-    const res = await masseAbfragen(Object.fromEntries(MASSE.map(([k]) => [k, numVal(form, `nass.${k}`)])), stellen);
+  const zettelFormular = async waehlen => {
+    const res = await masseAbfragen(Object.fromEntries(MASSE.map(([k]) => [k, numVal(form, `nass.${k}`)])), stellen, { waehlen });
     if (!res) return;
-    for (const [k, v] of Object.entries(res.werte)) form.elements[`nass.${k}`].value = v;
+    for (const [k, v] of Object.entries(res.werte)) wertSetzen(form.elements[`nass.${k}`], v);
     stellen = res.stellen;
     zeigeStellen();
   };
-  $app.querySelector('#zettel').onclick = zettelFormular;
+  $app.querySelector('#zettel').onclick = () => zettelFormular();
+  // die Grundmaße nass stehen mit den eigenen Stellen auf einem Zettel
+  $app.querySelector('#nass-grund').addEventListener('click', e => {
+    const knopf = e.target.closest('[data-wert]');
+    if (!knopf) return;
+    e.preventDefault();
+    zettelFormular(knopf.dataset.wert.slice('nass.'.length));
+  });
   // Nach dem Foto die Maße abfragen – damit wird die Blaupause am genauesten
-  mountMultiPhoto($app.querySelector('#photos'), photos, session, zettelFormular);
+  mountMultiPhoto($app.querySelector('#photos'), photos, session, () => zettelFormular());
   mountRepeat($app.querySelector('#extra'), extra, { labelA: 'Bezeichnung', labelB: 'Wert', addLabel: 'Angabe hinzufügen' });
 
   $app.querySelector('#cancel').onclick = () => $back.click();
@@ -1613,10 +1686,8 @@ function layerHtml(l, i, glazes) {
     </div>
     ${selectField('Auftrag', 'art', l.art || 'Tauchen', AUFTRAGSARTEN, { empty: null })}
     <div class="fields-2">
-      ${field('Tauchdauer', 'dauer', l.dauer, { type: 'number', unit: 'Sek.' })}
-      ${field('Wiederholungen', 'wdh', l.wdh ?? 1, { type: 'number', unit: '×' })}
-      ${field('Pause dazwischen', 'pause', l.pause, { type: 'number', unit: 'Sek.' })}
-      ${field('Litergewicht', 'litergewicht', l.litergewicht, { type: 'number', unit: 'g/l' })}
+      ${[['Tauchdauer', 'dauer', l.dauer, 'sek'], ['Wiederholungen', 'wdh', l.wdh ?? 1, 'mal'], ['Pause dazwischen', 'pause', l.pause, 'sek', 10], ['Litergewicht', 'litergewicht', l.litergewicht, 'gl']]
+        .map(([label, name, v, skala, start]) => wertFeld(label, name, v, skala, { gruppe: 'lage', titel: `${i + 1}. Glasurschicht`, start })).join('')}
     </div>
   </div>`;
 }
@@ -1695,9 +1766,9 @@ async function viewFiringForm(id, params) {
       <h2>Brand</h2>
       <div class="fields-2">
         ${field('Gebrannt am', 'brand.datum', b.datum, { type: 'date' })}
-        ${field('Temperatur', 'brand.temperatur', b.temperatur, { type: 'number', unit: '°C' })}
+        ${wertFeld('Temperatur', 'brand.temperatur', b.temperatur, 'grad', { gruppe: 'brand', titel: 'Brand' })}
         ${field('Kegel', 'brand.kegel', b.kegel, { placeholder: 'z. B. 6' })}
-        ${field('Haltezeit', 'brand.haltezeit', b.haltezeit, { type: 'number', unit: 'min' })}
+        ${wertFeld('Haltezeit', 'brand.haltezeit', b.haltezeit, 'min', { gruppe: 'brand', titel: 'Brand' })}
       </div>
       ${field('Ofen / Programm', 'brand.ofen', b.ofen, { placeholder: 'z. B. Nabertherm, Programm 4' })}
       ${field('Platz im Ofen', 'brand.position', b.position, { placeholder: 'z. B. oben links' })}
@@ -1725,7 +1796,7 @@ async function viewFiringForm(id, params) {
       layer.querySelector('.free-name').hidden = e.target.value !== '__frei';
       const g = glazes.find(x => x.id === e.target.value);
       const lg = layer.querySelector('[name="litergewicht"]');
-      if (g && isNum(g.litergewicht) && !lg.value) lg.value = g.litergewicht;
+      if (g && isNum(g.litergewicht) && !lg.value) wertSetzen(lg, g.litergewicht);
     }
   });
   layersEl.addEventListener('click', e => {
@@ -1907,7 +1978,7 @@ async function viewGlazeForm(id) {
       ${field('Beschreibung', 'beschreibung', g.beschreibung, { placeholder: 'z. B. glänzend, transparent-grün' })}
       <div class="fields-2">
         ${field('Brennbereich', 'brennbereich', g.brennbereich, { placeholder: 'z. B. 1220–1250 °C' })}
-        ${field('Litergewicht', 'litergewicht', g.litergewicht, { type: 'number', unit: 'g/l' })}
+        ${wertFeld('Litergewicht', 'litergewicht', g.litergewicht, 'gl')}
       </div>
       <p class="hint">Das Litergewicht (Gewicht von 1 Liter Glasurschlicker) beeinflusst stark, wie dick die Glasur beim Tauchen aufträgt.</p>
       ${field('Angesetzt am', 'angesetzt', g.angesetzt, { type: 'date' })}
@@ -1930,7 +2001,7 @@ async function viewGlazeForm(id) {
 
   const summeEl = $app.querySelector('#summe');
   mountRepeat($app.querySelector('#rezept'), rezept, {
-    labelA: 'Rohstoff', labelB: 'Anteil', typeB: 'number', addLabel: 'Rohstoff hinzufügen',
+    labelA: 'Rohstoff', labelB: 'Anteil', skalaB: 'anteil', addLabel: 'Rohstoff hinzufügen',
     onChange: () => {
       const s = rezept.reduce((a, r) => a + (isNum(String(r.b).replace(',', '.')) ? Number(String(r.b).replace(',', '.')) : 0), 0);
       summeEl.textContent = s ? `Summe: ${fmt(s, 2)}` : '';

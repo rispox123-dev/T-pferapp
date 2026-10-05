@@ -396,17 +396,27 @@ form .card { padding-bottom: 6px; }
   font-size: .95rem;
   color: var(--muted);
 }
-.unit-input { position: relative; }
-.unit-input input { padding-right: 46px; }
-.unit-input em {
-  position: absolute;
-  right: 6px;
-  top: 50%;
-  transform: translateY(-50%);
-  font-style: normal;
-  color: var(--muted);
-  pointer-events: none;
+/* Zahlen: antippen öffnet den Zettel mit dem Maßband; sieht aus wie die Bleistiftlinie der Felder */
+.wert-knopf {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 4px 4px;
+  border: 0;
+  border-bottom: 1.5px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  font-size: 1.1rem;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
 }
+.wert-knopf:focus-visible { outline: none; border-bottom-color: var(--text); }
+.wert-knopf:active { border-bottom-color: var(--text); }
+.wert-leer { color: var(--muted); opacity: .7; }
 .fields-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
 .fields-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0 12px; }
 .hint { margin: -4px 0 14px; color: var(--muted); font-size: .92rem; }

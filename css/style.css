@@ -124,6 +124,21 @@ a { color: inherit; }
 }
 #top-actions { display: flex; gap: 4px; }
 
+/* Ansicht der Werkstücke wechseln: ein kleines, mit Bleistift gezeichnetes Bild, kein Rahmen */
+.ansicht-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 46px; height: 46px; padding: 4px;
+  border: 0; background: none; color: var(--text);
+  cursor: pointer;
+  transform: rotate(-3deg);
+  transition: transform .15s;
+}
+.ansicht-btn svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.ansicht-btn path { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; opacity: .88; }
+.ansicht-btn .duenn { stroke-width: 1.05; opacity: .62; }
+.ansicht-btn:active { transform: rotate(2deg) scale(.94); }
+.ansicht-btn:focus-visible { outline: 1.5px dashed var(--muted); outline-offset: 2px; }
+
 /* ---------- Hauptbereich ---------- */
 main {
   max-width: 680px;
@@ -260,6 +275,26 @@ main {
 .tile .tile-body { padding: 6px 2px 0; }
 .tile .tile-title { font-size: 1.12rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tile .tile-sub { color: var(--muted); font-size: .9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Skizzenbuch: die Blaupausen ohne Maße direkt aufs Blatt gezeichnet, darunter der Name */
+.grid.skizzenbuch { gap: 10px 16px; }
+.skizze-tile { text-align: center; }
+.skizze-bild { display: block; aspect-ratio: 1; }
+.skizze-bild svg { display: block; width: 100%; height: 100%; }
+.skizzenbuch .skizze-tile:nth-child(3n+1) .skizze-bild { transform: rotate(-1.4deg) translateY(2px); }
+.skizzenbuch .skizze-tile:nth-child(3n+2) .skizze-bild { transform: rotate(1.1deg); }
+.skizzenbuch .skizze-tile:nth-child(3n) .skizze-bild { transform: rotate(-.4deg) translateY(-2px); }
+.skizze-name {
+  display: block;
+  margin: -2px 6px 0;
+  font-size: 1.18rem;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+.skizzenbuch .skizze-tile:nth-child(2n+1) .skizze-name { transform: rotate(-1.6deg); }
+.skizzenbuch .skizze-tile:nth-child(2n) .skizze-name { transform: rotate(1.2deg); }
+.skizze-leer { opacity: .4; }
+.skizze-leer path { fill: none; stroke: var(--text); stroke-width: 1.4; stroke-linecap: round; stroke-dasharray: 5 4; }
 
 .thumb {
   position: relative;
@@ -850,8 +885,8 @@ dialog.masse::backdrop { background: rgba(40, 36, 30, .25); }
   width: 34px; height: 40px; padding: 6px 4px;
   border: 0; background: none; color: var(--muted); cursor: pointer;
 }
-.muell svg, .plus-knopf svg { display: block; width: 100%; height: 100%; }
-.muell path, .plus-knopf path { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.muell svg, .plus-knopf svg, .radierer svg { display: block; width: 100%; height: 100%; }
+.muell path, .plus-knopf path, .radierer path { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .muell:active { color: var(--bad); }
 .masse-plus { display: flex; align-items: center; gap: 14px; margin: 6px 0 0; min-height: 44px; }
 .plus-knopf {
@@ -874,3 +909,19 @@ dialog.masse::backdrop { background: rgba(40, 36, 30, .25); }
 
 /* eigene Stellen in der Werkstückansicht und im Formular */
 .stellen-liste { margin-top: 12px; }
+
+/* ein einzelnes Maß mit dem Maßband eintragen (Blaupause antippen) */
+.masse-bezeichnung { margin: 6px 0 10px; }
+.masse-einzeln { display: flex; align-items: center; gap: 2px; }
+.masse-einzeln .masse-zeile { flex: 1; min-width: 0; }
+.masse-liste li.masse-einzeln:last-child .masse-zeile { border-bottom: 0; }
+.masse-wert.geschaetzt { color: var(--muted); }
+.radierer {
+  flex: 0 0 auto; width: 34px; height: 40px; padding: 7px 4px;
+  border: 0; background: none; color: var(--muted); cursor: pointer;
+}
+.radierer[hidden] { display: none; }
+.radierer .duenn { stroke-width: 1.1; }
+.radierer:active { color: var(--bad); }
+.radierer:focus-visible { outline: 1.5px dashed var(--muted); outline-offset: 2px; }
+.fetzen .sheet-buttons + .sheet-buttons { margin-top: 0; }

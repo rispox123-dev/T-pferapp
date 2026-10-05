@@ -1,6 +1,7 @@
 // Test im Browser: Nach dem Hinzufügen eines Fotos fragt die App die vier Grundmaße ab
 // (Zettel + Maßband). Prüft Startwert 5 cm, langsames Wischen auf 1 mm genau, schnelles
-// Wischen mit großen Sprüngen, Übernahme ins Formular. Screenshots in tools/test/ausgabe/.
+// Wischen mit großen Sprüngen, Übernahme ins Formular; Maße in der Blaupause der Werkstückseite
+// ebenfalls mit dem Maßband; Übersicht als Fotos oder Skizzenbuch. Screenshots in tools/test/ausgabe/.
 //
 //   node tools/test/massband-test.mjs
 
@@ -155,6 +156,72 @@ const gespeichert = await page.evaluate(() => new Promise(res => {
 }));
 console.log('Stellen gespeichert:', JSON.stringify(gespeichert));
 pruefe(gespeichert.length === 3 && gespeichert[2].art === 'schulter' && (await page.textContent('.bp-card svg')).includes('Ø Schulter'), 'Werkstückansicht: Schulter hinzugefügt und gespeichert');
+
+// Blaupause antippen: auch hier das Maßband statt Zahlenfeldern
+const stueck = () => page.evaluate(() => new Promise(res => {
+  const r = indexedDB.open('toepferbuch');
+  r.onsuccess = () => { const q = r.result.transaction('pieces').objectStore('pieces').getAll(); q.onsuccess = () => res(q.result[0]); };
+}));
+const einzeln = f => page.textContent(`[data-f="${f}"] .masse-wert`);
+await page.click('[data-bp-key="rand"]');
+await page.waitForSelector('dialog.masse[open]');
+pruefe(!(await page.$('dialog.masse input[type="number"]')), 'Blaupause: keine Zahlenfelder mehr');
+pruefe(await page.isVisible('dialog.masse [name="bezeichnung"]'), 'Blaupause: Bezeichnung lässt sich ändern');
+pruefe(!(await page.isVisible('.massband.offen')), 'Blaupause: Maßband erst nach dem Antippen');
+await page.click('[data-f="wert"]');
+pruefe(await page.isVisible('.massband.offen'), 'Blaupause: Maßband offen');
+for (let i = 0; i < 2; i++) await page.keyboard.press('Shift+ArrowRight');
+const oeffnung = Math.round((schnell + 2) * 10) / 10;
+pruefe((await einzeln('wert')) === `${oeffnung.toLocaleString('de-DE', { minimumFractionDigits: 1 })} cm`, `Ø Öffnung mit dem Maßband → ${await einzeln('wert')}`);
+await page.screenshot({ path: join(ausgabe, 'massband-6-blaupause.png') });
+await page.click('[data-ende="ok"]');
+await page.waitForSelector('dialog.masse', { state: 'detached' });
+await page.waitForTimeout(300);
+pruefe((await stueck()).nass.dOben === oeffnung, `Ø Öffnung gespeichert (${(await stueck()).nass.dOben})`);
+
+// eigene Stelle aus der Blaupause: Ø und Höhe vom Boden mit dem Maßband
+const taille = (await stueck()).stellen.find(x => x.art === 'taille');
+await page.click(`[data-bp-key="stelle-${taille.id}"]`);
+await page.waitForSelector('dialog.masse[open]');
+pruefe((await einzeln('wert')) === '6,0 cm' && (await einzeln('pos')) === '7,0 cm', 'Taille: Ø 6,0 cm auf 7,0 cm Höhe');
+await page.click('[data-f="pos"]');
+await page.keyboard.press('Shift+ArrowLeft');
+await page.keyboard.press('ArrowRight');
+await page.click('[data-ende="ok"]');
+await page.waitForSelector('dialog.masse', { state: 'detached' });
+await page.waitForTimeout(300);
+const taille2 = (await stueck()).stellen.find(x => x.id === taille.id);
+pruefe(taille2.h === 6.1 && taille2.d === 6, `Taille auf 6,1 cm Höhe (${taille2.d} / ${taille2.h})`);
+
+// ohne Eintrag: Schätzung (≈) als Startwert, Radiergummi löscht wieder
+await page.click('[data-bp-key="fuss"]');
+await page.waitForSelector('dialog.masse[open]');
+const geschaetzt = await einzeln('wert');
+pruefe(geschaetzt.startsWith('≈'), `Ø Fuß zeigt die Schätzung (${geschaetzt})`);
+await page.click('[data-f="wert"]');
+pruefe((await einzeln('wert')) === geschaetzt.slice(2) && await page.isVisible('[data-leeren="wert"]'), `Startwert = Schätzung (${await einzeln('wert')})`);
+await page.click('[data-leeren="wert"]');
+pruefe((await einzeln('wert')) === geschaetzt && !(await page.isVisible('.massband.offen')), 'Radiergummi: wieder geschätzt');
+await page.click('[data-ende="abbrechen"]');
+await page.waitForSelector('dialog.masse', { state: 'detached' });
+pruefe((await stueck()).nass.dBoden == null, 'Abbrechen ändert nichts');
+
+// Übersicht: oben rechts zwischen Fotos und Skizzen wechseln
+await page.goto(`http://localhost:${port}/#/werkstuecke`);
+await page.waitForSelector('#ansicht');
+pruefe((await page.getAttribute('#ansicht', 'aria-label')) === 'Skizzen zeigen' && await page.isVisible('.tile .thumb'), 'Übersicht: Fotos, Knopf „Skizzen zeigen“');
+await page.screenshot({ path: join(ausgabe, 'massband-7-fotos.png') });
+await page.click('#ansicht');
+await page.waitForSelector('.skizze-tile svg.skizze');
+const skizzeText = await page.$eval('.skizze-tile', el => [...el.querySelectorAll('svg text, .skizze-name')].map(t => t.textContent).join(' '));
+pruefe(skizzeText.includes('Zickzack-Becher') && !/\d\s*cm|Ø/.test(skizzeText), `Skizze mit Namen, ohne Maße („${skizzeText.trim().replace(/\s+/g, ' ')}“)`);
+pruefe((await page.getAttribute('#ansicht', 'aria-label')) === 'Fotos zeigen' && !(await page.$('.tile .thumb')), 'Skizzenbuch: keine Fotos, Knopf „Fotos zeigen“');
+await page.screenshot({ path: join(ausgabe, 'massband-8-skizzen.png') });
+await page.reload();
+await page.waitForSelector('#ansicht');
+pruefe(!!(await page.$('.skizze-tile')), 'Ansicht bleibt nach dem Neuladen');
+await page.click('#ansicht');
+pruefe(!!(await page.$('.tile .thumb')) && !(await page.$('.skizze-tile')), 'zurück zu den Fotos');
 
 console.log(fehler.length ? `\nFEHLER:\n${fehler.join('\n')}` : '\nAlles in Ordnung.');
 await browser.close();

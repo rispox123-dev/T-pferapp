@@ -3,7 +3,7 @@ import { processImage, blobToDataUrl, dataUrlToBlob, brennweiteAusExif } from '.
 import { findPoints, abgleich, estimate, renderBlueprint, hashSeed, alteWerte, istAutoName } from './blueprint.js';
 import { analyze, loadForAnalysis, cropFromGuide, DEFAULT_SENS } from './erkennung.js';
 import { gefuehrteAufnahme, kameraVerfuegbar, GRUPPEN } from './kamera.js';
-import { masseAbfragen, stelleName } from './massband.js';
+import { masseAbfragen, massAbfragen, stelleName } from './massband.js';
 
 // ---------------------------------------------------------------------------
 // Fachliche Listen
@@ -355,9 +355,53 @@ function mountRepeat(container, rows, { labelA, labelB, typeB = 'text', addLabel
 
 let pieceSearch = '';
 
+// Übersicht als Fotos oder als Skizzenbuch (Blaupausen ohne Maße, mit dem Namen des Stücks)
+const ANSICHT_KEY = 'werkstueckAnsicht';
+let pieceView = (() => { try { return localStorage.getItem(ANSICHT_KEY) === 'skizzen' ? 'skizzen' : 'fotos'; } catch { return 'fotos'; } })();
+
+// Mit Bleistift gezeichnet: ein kleines Skizzenbuch mit Stift (zu den Skizzen wechseln) …
+const ICON_SKIZZENBUCH = `<svg viewBox="0 0 36 36" aria-hidden="true">
+  <path d="M6.4 8.3C11.6 7.9 17.5 8.1 22.9 7.8C23.4 14.5 23.1 22.4 23.5 29.6C17.9 30 12.2 29.7 6.9 30.1C6.6 22.8 6.9 15.4 6.4 8.3Z"/>
+  <path d="M9.6 9.9C9.5 7.8 8.6 6.1 10 5.4S11.6 7.5 11.4 9.8M13.9 9.7C13.8 7.6 12.9 6 14.3 5.2S15.9 7.3 15.7 9.6M18.2 9.6C18.1 7.5 17.2 5.8 18.6 5.1S20.2 7.2 20 9.5" class="duenn"/>
+  <path d="M12.4 25.2C11.6 22.7 10.5 20.6 11.7 18.3C12.3 17 12.6 15.7 12.3 14.4M17 25.1C17.9 22.6 18.9 20.5 17.8 18.2C17.2 16.9 16.9 15.7 17.2 14.3M12.4 14.3C13.9 13.8 15.6 13.8 17.2 14.3M12.5 25.3C14 25.7 15.6 25.7 17 25.2" class="duenn"/>
+  <path d="M33.1 9.6L22.4 27.7L19.6 29.6L20 26.3L30.6 8.1C31.2 7.2 32 7.1 32.8 7.6C33.6 8.1 33.6 8.8 33.1 9.6ZM20 26.3L22.4 27.7M29.2 10.5L31.7 12"/>
+</svg>`;
+// … und ein Polaroid (zurück zu den Fotos)
+const ICON_POLAROID = `<svg viewBox="0 0 36 36" aria-hidden="true">
+  <path d="M7.2 6.1C14.1 5.4 21.6 5.8 28.4 5.3C29.1 13.6 29.4 22.9 29.9 31.2C22.6 31.6 14.9 31.2 8.1 31.9C7.6 23.3 7.6 14.6 7.2 6.1Z"/>
+  <path d="M10.4 9.1C15.3 8.8 20.5 8.9 25.5 8.6C25.8 13.4 25.9 18.3 26.2 23.2C21.2 23.5 16.1 23.4 11.1 23.8C10.8 18.9 10.8 13.9 10.4 9.1Z"/>
+  <path d="M11.5 20.3C13.6 17.6 15.2 15.4 17.2 17.8C18.7 15.6 20.4 13.4 22.3 15.6C23.4 16.9 24.4 18.3 25.6 19.6" class="duenn"/>
+  <path d="M21.4 12.4C21.3 11.4 22.1 10.8 22.9 11C23.8 11.2 24 12.3 23.4 12.9C22.8 13.5 21.6 13.3 21.4 12.4Z" class="duenn"/>
+  <path d="M13.2 27.6C15.6 27 18.4 27.9 20.8 27.2" class="duenn"/>
+</svg>`;
+
+const ansichtButton = () => (pieceView === 'skizzen'
+  ? `<button type="button" class="ansicht-btn" id="ansicht" aria-label="Fotos zeigen" title="Fotos zeigen">${ICON_POLAROID}</button>`
+  : `<button type="button" class="ansicht-btn" id="ansicht" aria-label="Skizzen zeigen" title="Skizzen zeigen">${ICON_SKIZZENBUCH}</button>`);
+
+// Platzhalter im Skizzenbuch, wenn es noch keine Blaupause gibt: eine angedeutete Form
+const SKIZZE_LEER = `<svg class="skizze-leer" viewBox="0 0 100 100" aria-hidden="true">
+  <path d="M37 26C33 38 26 46 28 58C30 70 36 76 38 80M63 26C67 38 74 46 72 58C70 70 64 76 62 80M37 26C45 24.6 55 24.6 63 26M38 80C45 81.6 55 81.6 62 80"/>
+</svg>`;
+
+const skizzenCache = new Map();
+function pieceSketch(p) {
+  if (!p.blueprint?.profile) return SKIZZE_LEER;
+  const key = `${p.id}:${p.updatedAt || p.createdAt || ''}`;
+  if (!skizzenCache.has(key)) {
+    try {
+      skizzenCache.set(key, renderBlueprint(bpMitStellen(p), { ...bpData(p), interactive: false, skizze: true, seed: hashSeed(p.id || p.name) }));
+    } catch (err) {
+      console.warn('Skizze:', err.message);
+      skizzenCache.set(key, SKIZZE_LEER);
+    }
+  }
+  return skizzenCache.get(key);
+}
+
 async function viewPieces() {
-  setHeader({ title: 'Werkstücke' });
   const pieces = (await db.getAll('pieces')).sort(byDateDesc);
+  setHeader({ title: 'Werkstücke', actions: pieces.length ? ansichtButton() : '' });
 
   if (!pieces.length) {
     $app.innerHTML = `<div class="empty">
@@ -377,6 +421,15 @@ async function viewPieces() {
   const renderGrid = () => {
     const q = pieceSearch.toLowerCase();
     const list = pieces.filter(p => !q || [p.name, p.tonsorte, p.serie, p.technik, p.notizen].join(' ').toLowerCase().includes(q));
+    const skizzen = pieceView === 'skizzen';
+    grid.classList.toggle('skizzenbuch', skizzen);
+    if (skizzen) {
+      grid.innerHTML = list.length ? list.map(p => `<a class="tile skizze-tile" href="#/werkstueck/${p.id}">
+          <span class="skizze-bild">${pieceSketch(p)}</span>
+          <span class="skizze-name">${esc(p.name || 'Ohne Namen')}</span>
+        </a>`).join('') : '<p class="muted">Nichts gefunden.</p>';
+      return;
+    }
     grid.innerHTML = list.length ? list.map(p => `<a class="tile" href="#/werkstueck/${p.id}">
         ${thumb(p.photos?.[0])}
         <div class="tile-body">
@@ -387,6 +440,15 @@ async function viewPieces() {
     hydratePhotos(grid);
   };
   $app.querySelector('.search').addEventListener('input', e => { pieceSearch = e.target.value; renderGrid(); });
+  // zwischen Fotos und Skizzen wechseln; der Knopf zeigt jeweils, wohin es geht
+  const umschalten = () => {
+    pieceView = pieceView === 'skizzen' ? 'fotos' : 'skizzen';
+    try { localStorage.setItem(ANSICHT_KEY, pieceView); } catch { /* gilt dann nur bis zum Neuladen */ }
+    $actions.innerHTML = ansichtButton();
+    $actions.querySelector('#ansicht').onclick = umschalten;
+    renderGrid();
+  };
+  $actions.querySelector('#ansicht').onclick = umschalten;
   renderGrid();
 }
 
@@ -767,34 +829,8 @@ async function createBlueprint(photoId, prev) {
   return makeBlueprint(photoId, crop, sens, result, prev, brush, gruppe, punkt);
 }
 
-function measureDialog({ title, isHeight, value, est, showPos, pos, posEst, label, removeText }) {
-  return new Promise(resolve => {
-    const dlg = document.createElement('dialog');
-    dlg.className = 'sheet';
-    dlg.innerHTML = `<form method="dialog">
-      <h2>${esc(title)}</h2>
-      ${label !== undefined ? field('Bezeichnung', 'label', label, { placeholder: 'z. B. Ø untere Rille' }) : ''}
-      ${field(isHeight ? 'Höhe gesamt' : 'Durchmesser', 'value', value ?? '', { type: 'number', unit: 'cm', placeholder: est ? `≈ ${fmt(est)}` : '' })}
-      ${showPos ? field('Auf welcher Höhe? (vom Boden gemessen)', 'pos', pos ?? '', { type: 'number', unit: 'cm', placeholder: posEst ? `≈ ${fmt(posEst)}` : '' }) : ''}
-      <p class="hint">${est && value == null ? `Aus dem Foto geschätzt: ≈ ${fmt(est)} cm. ` : ''}Leeres Feld löscht den Wert.</p>
-      <div class="sheet-buttons"><button class="btn primary" value="ok">Speichern</button><button class="btn" value="cancel">Abbrechen</button></div>
-      ${removeText ? `<button class="btn danger block" value="remove" style="margin-bottom:12px">${esc(removeText)}</button>` : ''}
-    </form>`;
-    document.body.append(dlg);
-    dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close('cancel'); });
-    dlg.addEventListener('close', () => {
-      const f = dlg.querySelector('form');
-      const action = dlg.returnValue;
-      const res = action === 'ok' || action === 'remove'
-        ? { action, value: numVal(f, 'value'), pos: showPos ? numVal(f, 'pos') : null, label: label !== undefined ? strVal(f, 'label') : undefined }
-        : null;
-      dlg.remove();
-      resolve(res);
-    });
-    dlg.showModal();
-    dlg.querySelector('input').focus();
-  });
-}
+// Wo die Stelle in der kleinen Skizze auf dem Zettel liegt (Stellen dazwischen: Ø auf ihrer Höhe)
+const SKIZZE_MASS = { hoehe: 'hoehe', rand: 'dOben', fuss: 'dBoden' };
 
 // Blaupause anzeigen; Maße lassen sich durch Antippen eintragen,
 // eigene Stellen durch Antippen der Form hinzufügen
@@ -816,32 +852,37 @@ function mountBlueprint(container, p, onSaved) {
     if (!pt) return;
     const interior = pt.t > 0 && pt.t < 1;
     const stelle = (p.stellen || []).find(s => stelleKey(s) === key);
-    const res = await measureDialog({
-      title: pt.label, isHeight: key === 'hoehe', value: values[key], est: est.value(pt),
-      showPos: interior, pos: pos[key], posEst: est.pos(pt),
-      label: key === 'hoehe' || stelle ? undefined : pt.label,
-      removeText: key === 'hoehe' ? '' : stelle || pt.custom ? 'Stelle löschen' : 'Stelle ausblenden',
+    const res = await massAbfragen({
+      titel: pt.label,
+      felder: [
+        { f: 'wert', name: key === 'hoehe' ? 'Höhe gesamt' : 'Durchmesser', wert: values[key], schaetzung: est.value(pt), skizze: SKIZZE_MASS[key] || 'd', leeren: !stelle },
+        ...(interior ? [{ f: 'pos', name: 'Höhe vom Boden', wert: pos[key], schaetzung: est.pos(pt), skizze: 'h', leeren: !stelle }] : []),
+      ],
+      hoehe: values.hoehe ?? est.scale,
+      bezeichnung: key === 'hoehe' || stelle ? undefined : pt.label,
+      entfernen: key === 'hoehe' ? '' : stelle || pt.custom ? 'Stelle löschen' : 'Stelle ausblenden',
     });
     if (!res) return;
+    const { wert, pos: lage } = res.werte;
     if (stelle) {
       // eigene Stelle vom Zettel: Ø und Höhe gehören zum Werkstück
-      if (res.action === 'remove') p.stellen = p.stellen.filter(s => s !== stelle);
+      if (res.aktion === 'entfernen') p.stellen = p.stellen.filter(s => s !== stelle);
       else {
-        if (res.value != null) stelle.d = res.value;
-        if (res.pos != null) stelle.h = res.pos;
+        if (wert != null) stelle.d = wert;
+        if (lage != null) stelle.h = lage;
       }
       return save();
     }
-    if (res.action === 'remove') {
+    if (res.aktion === 'entfernen') {
       if (pt.custom) bp().custom = (bp().custom || []).filter(c => c.key !== key);
       else bp().hidden = [...(bp().hidden || []), key];
       return save();
     }
-    if (BP_FIELDS[key]) p.nass = { ...(p.nass || {}), [BP_FIELDS[key]]: res.value };
-    else bp().values = { ...bp().values, [key]: res.value };
-    if (interior) bp().pos = { ...bp().pos, [key]: res.pos };
+    if (BP_FIELDS[key]) p.nass = { ...(p.nass || {}), [BP_FIELDS[key]]: wert };
+    else bp().values = { ...bp().values, [key]: wert };
+    if (interior) bp().pos = { ...bp().pos, [key]: lage };
     // nur einen wirklich eigenen Namen merken; der automatische folgt sonst den Begriffen der App
-    if (res.label !== undefined) bp().labels = { ...(bp().labels || {}), [key]: res.label && (pt.custom || !istAutoName(res.label)) ? res.label : undefined };
+    if (res.bezeichnung !== undefined) bp().labels = { ...(bp().labels || {}), [key]: res.bezeichnung && (pt.custom || !istAutoName(res.bezeichnung)) ? res.bezeichnung : undefined };
     return save();
   };
 
@@ -850,16 +891,22 @@ function mountBlueprint(container, p, onSaved) {
     const probe = { key: '_neu', t, m: 0 };
     const est = abgleich(bpMitStellen(p), values, pos);
     probe.m = 2 * est.profile[Math.round(t * (est.profile.length - 1))];
-    const res = await measureDialog({
-      title: 'Neue Stelle', value: null, est: est.value(probe), showPos: true, pos: null, posEst: est.pos(probe), label: 'Ø Stelle',
+    const res = await massAbfragen({
+      titel: 'Neue Stelle',
+      felder: [
+        { f: 'wert', name: 'Durchmesser', wert: null, schaetzung: est.value(probe), skizze: 'd', leeren: true },
+        { f: 'pos', name: 'Höhe vom Boden', wert: null, schaetzung: est.pos(probe), skizze: 'h', leeren: true },
+      ],
+      hoehe: values.hoehe ?? est.scale,
+      bezeichnung: 'Ø Stelle',
     });
-    if (!res || res.action !== 'ok') return;
+    if (!res || res.aktion !== 'ok') return;
     const key = `eigene-${Date.now().toString(36)}`;
     // Lage wie im Foto merken (die Zeichnung kann an die Maße angeglichen sein)
     bp().custom = [...(bp().custom || []), { key, t: Math.round(est.tFoto(t) * 1000) / 1000 }];
-    bp().labels = { ...(bp().labels || {}), [key]: res.label || 'Ø Stelle' };
-    bp().values = { ...bp().values, [key]: res.value };
-    bp().pos = { ...bp().pos, [key]: res.pos };
+    bp().labels = { ...(bp().labels || {}), [key]: res.bezeichnung || 'Ø Stelle' };
+    bp().values = { ...bp().values, [key]: res.werte.wert };
+    bp().pos = { ...bp().pos, [key]: res.werte.pos };
     return save();
   };
 

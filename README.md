@@ -12,6 +12,7 @@ Eine Handy-App für Töpferinnen und Töpfer, die eigene Stücke töpfern und ei
 - Beliebige weitere Angaben (z. B. Henkellänge, Fußring)
 - Notizen und Arbeitsschritte
 - **„Nochmal töpfern“**: übernimmt Ton, Maße und Blaupause als Vorlage für ein neues Stück
+- **Fotos oder Skizzenbuch**: Oben rechts in der Übersicht wechselt ein kleiner, mit Bleistift gezeichneter Knopf zwischen den Fotos und den Blaupausen. Als Skizzen stehen die Stücke ohne Maße, nur mit ihrem Namen, direkt auf dem Blatt – wie eine Seite im Skizzenbuch. Der Knopf zeigt, wohin es geht: ein Skizzenbuch mit Stift (zu den Skizzen) oder ein Polaroid (zurück zu den Fotos). Die gewählte Ansicht bleibt erhalten
 
 ### Blaupause aus dem Foto
 - **Geführte Aufnahme** („Foto für Blaupause“): Eine Maske zeigt den Umriss einer typischen Form (Becher/Tasse, Schüssel, Vase), die Mittellinie, die Standlinie und die Augenhöhe. Eine **Wasserwaage** (Lagesensor) wird grün, wenn das Handy senkrecht und gerade ist. Hinweise wie „Näher heran“, „Standfläche auf die Standlinie“ oder „Mehr Licht“ führen zum besten Winkel: **frontal, Kamera auf halber Höhe, Henkel zur Seite**.
@@ -23,7 +24,7 @@ Eine Handy-App für Töpferinnen und Töpfer, die eigene Stücke töpfern und ei
 - Obere Ecken: Ist die Neigung vom Lagesensor oder die Brennweite nicht ganz genau, gerät ein Stück des Randbogens ins Profil und die Ecken würden rund. Biegt das Profil nur ganz oben und viel stärker als die Wand darunter ein, setzt die App die Wand bis zum Rand fort
 - **Zeichnung leicht von oben**, damit Öffnung und Boden als Ellipsen zu sehen sind – auch wenn frontal fotografiert wurde. Gezeichnet mit Bleistift in Handschrift auf off-white Aquarellpapier; markante Stellen (nur wo sich die Form wirklich ändert): **Öffnung, Schulter, Bauch (größter Durchmesser), Taille (Einziehung), Fuß bzw. Fußring, Höhe**
 - Fehlt eine Stelle, **auf die Form tippen** und eine eigene Stelle hinzufügen; Stellen lassen sich umbenennen oder ausblenden
-- **Maß antippen** → Wert eintragen. Schon ein Maß reicht: alle anderen Maße und die Höhe der Stellen werden aus dem Foto **geschätzt (≈)**
+- **Maß antippen** → Wert mit dem **Maßband** eintragen (wie auf dem Zettel; Startwert ist die Schätzung aus dem Foto, der gezeichnete **Radiergummi** löscht einen Wert wieder). Bei Stellen zwischen Öffnung und Fuß lässt sich auch die Höhe vom Boden mit dem Maßband einstellen, der Name der Stelle bleibt änderbar. Schon ein Maß reicht: alle anderen Maße und die Höhe der Stellen werden aus dem Foto **geschätzt (≈)**
 - **Abgleich mit deinen Maßen**: Die Zeichnung wird so angepasst, dass jedes eingetragene Maß genau stimmt. Zwischen zwei eingetragenen Stellen bleibt der Verlauf erhalten; steigt oder fällt die Wand dort nur, wird sie genau auf die Maße gestreckt – sind beide gleich (z. B. Taille = Öffnung), wird sie gerade. Eine eingetragene Höhenlage („auf welcher Höhe“) verschiebt die Stelle. Henkel wandern mit. Die eingetragene Höhe legt den Maßstab fest
 - Auf der Werkstückseite zeigt ein kleines Foto mit eingezeichnetem Umriss, **wie die App das Stück erkannt hat** – bei Unsicherheit mit dem Hinweis „Bitte prüfen“
 - „Umriss anpassen“: Rahmen, Empfindlichkeit, Art des Stücks, anderes oder neues Foto; **auf das Stück tippen**, wenn die App ein Nachbarobjekt erwischt hat; mit **Henkel** den Henkel nachmalen (der Körper bleibt dabei unverändert), mit **Hinzufügen / Entfernen** den Körper korrigieren. Einseitig Hinzugefügtes zählt als Henkel, nicht als Körper
@@ -81,7 +82,7 @@ npx http-server -p 8080
 | `js/db.js` | Speicherung auf dem Gerät (IndexedDB) |
 | `js/image.js` | Fotos verkleinern, Brennweite aus EXIF |
 | `js/kamera.js` | Geführte Aufnahme: Maske, Wasserwaage, Live-Hinweise |
-| `js/massband.js` | Grundmaße nach dem Foto abfragen: Zettel mit Risskante, Maßband mit geschwindigkeitsabhängigem Wischen |
+| `js/massband.js` | Maße mit dem Maßband eintragen: Zettel mit Risskante, Maßband mit geschwindigkeitsabhängigem Wischen; Grundmaße nach dem Foto und einzelne Maße der Blaupause |
 | `js/kontur.js` | Umriss begradigen: gerade Wände, ruhige Bögen, scharfe Kanten |
 | `js/erkennung.js` | Formerkennung: Stück vom Hintergrund trennen, Kontur je Seite, Leitseite, Perspektive, Henkel |
 | `js/formprior.js` | Formwissen: Kontur an die gelernten Formfamilien anpassen, verdeckte Stellen vorhersagen |
@@ -100,7 +101,7 @@ node tools/test/echt.mjs foto.png        # echtes Foto erkennen und Ergebnis ein
 node tools/test/blaupausen.mjs 6         # Testfotos und Blaupausen nebeneinander ansehen
 node tools/test/henkel-ecken.mjs 40      # Henkel (wie viel erfasst) und obere Ecken an Bechern/Tassen, mit --unschaerfe
 node tools/test/app-test.mjs             # Ende-zu-Ende im Browser mit simulierter Kamera, Vollbild, Zoom, Henkel-Werkzeug
-node tools/test/massband-test.mjs        # Maßabfrage nach dem Foto: Startwert, 1-mm-genaues und schnelles Wischen, Übernahme
+node tools/test/massband-test.mjs        # Maßband: Startwert, 1-mm-genaues und schnelles Wischen, Übernahme, Blaupause, Skizzenbuch-Ansicht
 ```
 
 - `tools/formen/typologie.mjs` – Formfamilien gedrehter Gefäße (Proportionen, Fuß, Bauch, Taille, Schulter, Hals, Lippe)

@@ -2,6 +2,8 @@
 // breitester Stelle und Fuß. Ein Maß antippen → am unteren Rand erscheint ein Maßband.
 // Wischen von rechts nach links vergrößert den Wert, von links nach rechts verkleinert ihn.
 // Langsam gewischt ist ein Teilstrich ein Millimeter; je schneller, desto größer die Sprünge.
+// Dasselbe Maßband dient überall, wo Größen eingetragen werden (massAbfragen: einzelne Maße
+// der Blaupause, mit Schätzung aus dem Foto als Startwert).
 
 export const GRUNDMASSE = [
   ['hoehe', 'Höhe'],
@@ -97,6 +99,260 @@ function topfBreite(y) {
 const MUELL = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 6.6C9 6.1 15 6.2 19.6 6.8M9.6 6.3C9.5 4.6 10 3.9 12 3.9S14.6 4.5 14.4 6.4M6.4 7.2L7.6 19.6C7.8 20.6 8.4 20.9 9.4 20.9L14.8 20.8C15.8 20.8 16.3 20.4 16.4 19.5L17.6 7.3M10.1 10L10.4 17.8M13.9 10.1L13.6 17.7"/></svg>`;
 const PLUS = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.2 6.4C12 10 12.1 14.5 11.9 17.8M6.3 12.1C10 11.9 14.2 12.2 17.8 11.9"/><path d="M12 2.8C6.6 2.6 2.9 6.6 3 12.1S7 21.3 12.3 21.1 21.2 17 21 11.7 17.2 2.9 11.4 3.1" class="kreis"/></svg>`;
 
+const escHtml = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// gezeichneter Radiergummi: eingetragenen Wert wieder löschen
+const RADIERER = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.3 15.4L12.9 6.3C13.6 5.6 14.5 5.6 15.2 6.2L19.1 9.9C19.8 10.6 19.8 11.5 19.1 12.2L11.5 20.2 7.5 20.3 4.4 17.2C3.9 16.7 3.9 15.9 4.3 15.4Z"/><path d="M8.9 10.8L14.5 16.2M11.6 20.2C14.6 20.1 17.6 20.3 20.4 20" class="duenn"/></svg>`;
+
+// Zettel mit Risskante und Maßband darunter; inhalt: HTML auf dem Zettel
+function zettelDialog(titel, inhalt) {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'masse';
+  dlg.setAttribute('aria-label', titel);
+  dlg.innerHTML = `
+    <div class="masse-buehne">
+      <div class="fetzen-schatten">
+        <div class="fetzen-rand"></div>
+        <div class="fetzen">${inhalt}</div>
+      </div>
+    </div>
+    <div class="massband" aria-hidden="true">
+      <canvas role="slider" tabindex="-1" aria-label="Maßband" aria-valuemin="${MIN_MM / 10}" aria-valuemax="${MAX_MM / 10}"></canvas>
+    </div>`;
+  document.body.append(dlg);
+  const rand = zufall(Date.now());
+  const fetzen = dlg.querySelector('.fetzen');
+  const fetzenRand = dlg.querySelector('.fetzen-rand');
+  // Risskante passend zur Größe des Zettels (er wächst mit den Stellen)
+  const reissen = () => {
+    fetzen.style.clipPath = riss(rand, 3);
+    fetzenRand.style.clipPath = riss(rand, 0);
+  };
+  reissen();
+  return { dlg, fetzen, reissen };
+}
+
+// Kein Eingabefeld: nicht gleich ein Maß fokussieren (sonst springt die Tastatur auf)
+function zettelZeigen(dlg) {
+  dlg.showModal();
+  const h2 = dlg.querySelector('.fetzen h2');
+  h2.tabIndex = -1;
+  h2.focus();
+}
+
+// Messlinie in der Skizze hervorheben. mass: 'hoehe', 'dOben', 'dMax', 'dBoden' oder
+// 'stelle'; stelle: { was: 'd' | 'h', h: Höhe der Stelle vom Boden (mm), H: Höhe des Stücks (mm) }
+function skizzeMarkieren(svg, mass, stelle) {
+  for (const g of svg.querySelectorAll('.mass')) g.classList.toggle('an', g.dataset.mass === mass);
+  if (mass !== 'stelle' || !stelle) return;
+  const H = stelle.H || Math.max(100, stelle.h + 20);
+  const y = Math.max(20, Math.min(96, 98 - (stelle.h / H) * 80));
+  const b = topfBreite(y);
+  svg.querySelector('[data-mass="stelle"] path').setAttribute('d', stelle.was === 'd'
+    ? `M${50 - b} ${y}H${50 + b}M${50 - b} ${y - 4}V${y + 4}M${50 + b} ${y - 4}V${y + 4}`
+    : `M7 ${y}V98M3 ${y}H11M3 98H11M11 ${y}H${50 - b}`);
+}
+
+// Das Maßband am unteren Rand eines Zettels: Zeichnen, Wischen mit Nachlauf, Mausrad,
+// Pfeiltasten. aendern(mm) wird bei jedem neuen (auf den Millimeter gerundeten) Wert gerufen.
+function massbandAnbringen(dlg, aendern) {
+  const band = dlg.querySelector('.massband');
+  const canvas = band.querySelector('canvas');
+  const ctx = canvas.getContext('2d');
+  let an = false;     // Maßband offen
+  let pos = START_MM; // Lage des Maßbands (mm, stufenlos); der Wert ist die gerundete Lage
+  let wert = null;    // zuletzt gemeldeter Wert (mm)
+
+  const zeigeWert = () => {
+    canvas.setAttribute('aria-valuenow', String(wert / 10));
+    canvas.setAttribute('aria-valuetext', cmText(wert));
+  };
+
+  // ---------- Zeichnen ----------
+  let geplant = false;
+  const zeichnenBald = () => {
+    if (geplant) return;
+    geplant = true;
+    requestAnimationFrame(() => { geplant = false; zeichnen(); });
+  };
+
+  function zeichnen() {
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (!w || !h) return;
+    const d = window.devicePixelRatio || 1;
+    if (canvas.width !== Math.round(w * d) || canvas.height !== Math.round(h * d)) {
+      canvas.width = Math.round(w * d);
+      canvas.height = Math.round(h * d);
+    }
+    const css = getComputedStyle(dlg);
+    const stift = css.getPropertyValue('--text').trim() || '#3d3b38';
+    const akzent = css.getPropertyValue('--accent').trim() || '#a4532f';
+    ctx.setTransform(d, 0, 0, d, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    const mitte = w / 2;
+    const von = Math.max(0, Math.floor(pos - mitte / PX_JE_MM) - 1);
+    const bis = Math.min(MAX_MM, Math.ceil(pos + mitte / PX_JE_MM) + 1);
+    const schrift = Math.round(Math.max(15, Math.min(24, h * 0.2)));
+    ctx.font = `${schrift}px "Bleistift Hand", "Patrick Hand", cursive`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = ctx.fillStyle = stift;
+    for (let n = von; n <= bis; n++) {
+      const x = mitte + (n - pos) * PX_JE_MM;
+      const cm = n % 10 === 0, halb = n % 5 === 0;
+      const z = zitter(n);
+      const lang = h * (cm ? 0.36 : halb ? 0.25 : 0.15) + (z - 0.5) * 2.5;
+      ctx.globalAlpha = cm ? 0.85 : halb ? 0.65 : 0.42 + z * 0.12;
+      ctx.lineWidth = cm ? 1.6 : 1.1;
+      ctx.beginPath();
+      ctx.moveTo(x + (z - 0.5) * 0.8, 0);
+      ctx.lineTo(x - (z - 0.5) * 0.8, lang);
+      ctx.stroke();
+      if (cm) {
+        ctx.globalAlpha = 0.8;
+        ctx.fillText(String(n / 10), x, lang + 5);
+      }
+    }
+    // Ablesemarke in der Mitte
+    ctx.globalAlpha = 0.9;
+    ctx.strokeStyle = ctx.fillStyle = akzent;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(mitte, 0);
+    ctx.lineTo(mitte, h * 0.62);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(mitte - 7, 0);
+    ctx.lineTo(mitte + 7, 0);
+    ctx.lineTo(mitte, 9);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  document.fonts?.load?.('20px "Bleistift Hand"').then(zeichnenBald, () => {});
+
+  // ---------- Wert ändern ----------
+  const setze = neu => {
+    pos = Math.max(MIN_MM, Math.min(MAX_MM, neu));
+    const w = Math.round(pos);
+    if (an && w !== wert) {
+      // beim Überschreiten eines Zentimeters ganz leicht vibrieren
+      if (wert != null && Math.floor(w / 10) !== Math.floor(wert / 10)) navigator.vibrate?.(4);
+      wert = w;
+      zeigeWert();
+      aendern(w);
+    }
+    zeichnenBald();
+  };
+
+  // ---------- Wischen ----------
+  let zug = null;   // laufende Wischbewegung
+  let schwung = 0;  // Nachlauf nach schnellem Loslassen (mm/ms)
+  let lauf = 0;     // requestAnimationFrame des Nachlaufs
+
+  canvas.addEventListener('pointerdown', e => {
+    if (!an) return;
+    e.preventDefault();
+    canvas.setPointerCapture(e.pointerId);
+    zug = { id: e.pointerId, x: e.clientX, t: e.timeStamp, v: 0, mmMs: 0 };
+    schwung = 0;
+  });
+  canvas.addEventListener('pointermove', e => {
+    if (!zug || e.pointerId !== zug.id) return;
+    const dx = e.clientX - zug.x;
+    const dt = Math.max(1, e.timeStamp - zug.t);
+    zug.v = zug.v * 0.6 + (Math.abs(dx) / dt) * 0.4;
+    const dmm = (-dx / PX_JE_MM) * verstaerkung(zug.v);
+    zug.mmMs = zug.mmMs * 0.6 + (dmm / dt) * 0.4;
+    zug.x = e.clientX;
+    zug.t = e.timeStamp;
+    setze(pos + dmm);
+  });
+  const loslassen = e => {
+    if (!zug || e.pointerId !== zug.id) return;
+    // schnell losgelassen: das Maßband läuft ein Stück nach
+    if (zug.v > 0.6 && e.timeStamp - zug.t < 80) schwung = Math.max(-0.6, Math.min(0.6, zug.mmMs * 0.5));
+    zug = null;
+    nachlauf();
+  };
+  canvas.addEventListener('pointerup', loslassen);
+  canvas.addEventListener('pointercancel', loslassen);
+
+  // Nachlauf, danach auf den nächsten Millimeter einrasten
+  function nachlauf() {
+    cancelAnimationFrame(lauf);
+    let t0 = performance.now();
+    const schritt = t => {
+      const dt = Math.min(50, t - t0);
+      t0 = t;
+      if (zug || !an) return;
+      if (schwung) {
+        setze(pos + schwung * dt);
+        schwung *= 0.985 ** dt;
+        if (Math.abs(schwung) < 0.005 || pos <= MIN_MM || pos >= MAX_MM) schwung = 0;
+      } else {
+        const ziel = Math.round(pos);
+        if (Math.abs(ziel - pos) < 0.02) { setze(ziel); return; }
+        setze(pos + (ziel - pos) * Math.min(1, dt / 50));
+      }
+      lauf = requestAnimationFrame(schritt);
+    };
+    lauf = requestAnimationFrame(schritt);
+  }
+
+  // Mausrad / Trackpad am Rechner
+  canvas.addEventListener('wheel', e => {
+    if (!an) return;
+    e.preventDefault();
+    schwung = 0;
+    setze(pos + (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : -e.deltaY) / PX_JE_MM);
+    clearTimeout(canvas.rast);
+    canvas.rast = setTimeout(nachlauf, 120);
+  }, { passive: false });
+
+  // Pfeiltasten (auf dem gewählten Maß oder dem Maßband): 1 mm, mit Umschalt 1 cm
+  dlg.addEventListener('keydown', e => {
+    if (!an || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
+    if (!e.target.closest('[data-f]') && e.target !== canvas) return;
+    e.preventDefault();
+    const s = (e.key === 'ArrowRight' || e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 10 : 1);
+    schwung = 0;
+    setze(Math.round(pos) + s);
+  });
+
+  const onResize = () => zeichnenBald();
+  window.addEventListener('resize', onResize);
+
+  return {
+    // Maßband für ein Maß öffnen: Startwert (mm) und Name für Bildschirmleser
+    zeigen(mm, name) {
+      an = true;
+      pos = wert = Math.max(MIN_MM, Math.min(MAX_MM, Math.round(mm)));
+      schwung = 0;
+      zeigeWert();
+      canvas.setAttribute('aria-label', `Maßband: ${name}`);
+      canvas.tabIndex = 0;
+      band.removeAttribute('aria-hidden');
+      band.classList.add('offen');
+      zeichnenBald();
+    },
+    verbergen() {
+      an = false;
+      band.classList.remove('offen');
+      band.setAttribute('aria-hidden', 'true');
+      canvas.tabIndex = -1;
+    },
+    abbauen() {
+      an = false;
+      cancelAnimationFrame(lauf);
+      window.removeEventListener('resize', onResize);
+    },
+  };
+}
+
+const WISCH_TIPP = 'Maßband nach links wischen: größer, nach rechts: kleiner. Langsam wischen für Millimeter.';
+
 // werte: { hoehe, dOben, dMax, dBoden } in cm (oder leer); stellen: [{ id, art, d, h }] in cm.
 // Ergebnis: { werte: geänderte Grundmaße in cm, stellen: alle Stellen in cm } oder null (Esc)
 export function masseAbfragen(werte = {}, stellen = []) {
@@ -107,7 +363,6 @@ export function masseAbfragen(werte = {}, stellen = []) {
     for (const [k] of GRUNDMASSE) start[k] = mm[k] = zuMm(werte[k]);
     const st = stellen.map(s => ({ id: s.id, art: s.art, d: zuMm(s.d) ?? START_MM, h: zuMm(s.h) ?? START_MM }));
     let aktiv = null; // gewähltes Feld: Grundmaß-Schlüssel oder „<id>:d“ / „<id>:h“
-    let pos = START_MM; // Lage des Maßbands (mm, stufenlos); der Wert ist die gerundete Lage
 
     const stelleVon = f => st.find(s => f.startsWith(`${s.id}:`));
     const lies = f => { const s = stelleVon(f); return s ? s[f.slice(-1)] : mm[f]; };
@@ -118,56 +373,30 @@ export function masseAbfragen(werte = {}, stellen = []) {
       return f.endsWith(':d') ? `Ø ${stelleName(st, s)}` : `Höhe ${stelleName(st, s)}`;
     };
 
-    const dlg = document.createElement('dialog');
-    dlg.className = 'masse';
-    dlg.setAttribute('aria-label', 'Maße deines Stücks');
-    dlg.innerHTML = `
-      <div class="masse-buehne">
-        <div class="fetzen-schatten">
-          <div class="fetzen-rand"></div>
-          <div class="fetzen">
-            <h2>Maße deines Stücks</h2>
-            <p class="hint">Mit den genauen Maßen wird die Blaupause am besten.</p>
-            <div class="masse-inhalt">
-              ${SKIZZE}
-              <ul class="masse-liste">
-                ${GRUNDMASSE.map(([k, label]) => `<li><button type="button" class="masse-zeile" data-f="${k}" aria-pressed="false">
-                  <span class="masse-name">${label}</span><span class="masse-wert"></span></button></li>`).join('')}
-              </ul>
-            </div>
-            <ul class="masse-stellen"></ul>
-            <div class="masse-plus">
-              <button type="button" class="plus-knopf" aria-label="Stelle hinzufügen" aria-expanded="false">${PLUS}</button>
-              <div class="plus-wahl" hidden>
-                ${STELLEN_ARTEN.map(([art, label]) => `<button type="button" data-art="${art}">${label}</button>`).join('')}
-              </div>
-            </div>
-            <p class="hint masse-tipp">Tippe ein Maß an.</p>
-            <div class="sheet-buttons">
-              <button type="button" class="btn primary" data-ende="ok">Übernehmen</button>
-            </div>
-          </div>
+    const { dlg, fetzen, reissen } = zettelDialog('Maße deines Stücks', `
+      <h2>Maße deines Stücks</h2>
+      <p class="hint">Mit den genauen Maßen wird die Blaupause am besten.</p>
+      <div class="masse-inhalt">
+        ${SKIZZE}
+        <ul class="masse-liste">
+          ${GRUNDMASSE.map(([k, label]) => `<li><button type="button" class="masse-zeile" data-f="${k}" aria-pressed="false">
+            <span class="masse-name">${label}</span><span class="masse-wert"></span></button></li>`).join('')}
+        </ul>
+      </div>
+      <ul class="masse-stellen"></ul>
+      <div class="masse-plus">
+        <button type="button" class="plus-knopf" aria-label="Stelle hinzufügen" aria-expanded="false">${PLUS}</button>
+        <div class="plus-wahl" hidden>
+          ${STELLEN_ARTEN.map(([art, label]) => `<button type="button" data-art="${art}">${label}</button>`).join('')}
         </div>
       </div>
-      <div class="massband" aria-hidden="true">
-        <canvas role="slider" tabindex="-1" aria-label="Maßband" aria-valuemin="${MIN_MM / 10}" aria-valuemax="${MAX_MM / 10}"></canvas>
-      </div>`;
-    document.body.append(dlg);
+      <p class="hint masse-tipp">Tippe ein Maß an.</p>
+      <div class="sheet-buttons">
+        <button type="button" class="btn primary" data-ende="ok">Übernehmen</button>
+      </div>`);
 
-    const rand = zufall(Date.now());
-    const fetzen = dlg.querySelector('.fetzen');
-    const fetzenRand = dlg.querySelector('.fetzen-rand');
-    // Risskante passend zur Größe des Zettels (er wächst mit den Stellen)
-    const reissen = () => {
-      fetzen.style.clipPath = riss(rand, 3);
-      fetzenRand.style.clipPath = riss(rand, 0);
-    };
-    reissen();
-
-    const band = dlg.querySelector('.massband');
-    const canvas = band.querySelector('canvas');
-    const ctx = canvas.getContext('2d');
     const tipp = dlg.querySelector('.masse-tipp');
+    const skizze = dlg.querySelector('.masse-skizze');
     const stellenListe = dlg.querySelector('.masse-stellen');
     const plusKnopf = dlg.querySelector('.plus-knopf');
     const plusWahl = dlg.querySelector('.plus-wahl');
@@ -178,10 +407,6 @@ export function masseAbfragen(werte = {}, stellen = []) {
       if (!el) return;
       const v = lies(f);
       el.textContent = v == null ? '–' : cmText(v);
-      if (f === aktiv) {
-        canvas.setAttribute('aria-valuenow', String(v / 10));
-        canvas.setAttribute('aria-valuetext', cmText(v));
-      }
     };
 
     const zeigeStellen = () => {
@@ -200,104 +425,21 @@ export function masseAbfragen(werte = {}, stellen = []) {
     const markieren = () => {
       for (const b of dlg.querySelectorAll('[data-f]')) b.setAttribute('aria-pressed', String(b.dataset.f === aktiv));
       const s = aktiv && stelleVon(aktiv);
-      for (const g of dlg.querySelectorAll('.masse-skizze .mass')) g.classList.toggle('an', s ? g.dataset.mass === 'stelle' : g.dataset.mass === aktiv);
-      if (s) {
-        const H = mm.hoehe || Math.max(100, s.h + 20);
-        const y = Math.max(20, Math.min(96, 98 - (s.h / H) * 80));
-        const b = topfBreite(y);
-        dlg.querySelector('[data-mass="stelle"] path').setAttribute('d', aktiv.endsWith(':d')
-          ? `M${50 - b} ${y}H${50 + b}M${50 - b} ${y - 4}V${y + 4}M${50 + b} ${y - 4}V${y + 4}`
-          : `M7 ${y}V98M3 ${y}H11M3 98H11M11 ${y}H${50 - b}`);
-      }
+      skizzeMarkieren(skizze, s ? 'stelle' : aktiv, s && { was: aktiv.slice(-1), h: s.h, H: mm.hoehe });
     };
 
     for (const [k] of GRUNDMASSE) zeigeWert(k);
     zeigeStellen();
 
-    // ---------- Zeichnen ----------
-    let geplant = false;
-    const zeichnenBald = () => {
-      if (geplant) return;
-      geplant = true;
-      requestAnimationFrame(() => { geplant = false; zeichnen(); });
-    };
-
-    function zeichnen() {
-      const w = canvas.clientWidth, h = canvas.clientHeight;
-      if (!w || !h) return;
-      const d = window.devicePixelRatio || 1;
-      if (canvas.width !== Math.round(w * d) || canvas.height !== Math.round(h * d)) {
-        canvas.width = Math.round(w * d);
-        canvas.height = Math.round(h * d);
-      }
-      const css = getComputedStyle(dlg);
-      const stift = css.getPropertyValue('--text').trim() || '#3d3b38';
-      const akzent = css.getPropertyValue('--accent').trim() || '#a4532f';
-      ctx.setTransform(d, 0, 0, d, 0, 0);
-      ctx.clearRect(0, 0, w, h);
-      const mitte = w / 2;
-      const von = Math.max(0, Math.floor(pos - mitte / PX_JE_MM) - 1);
-      const bis = Math.min(MAX_MM, Math.ceil(pos + mitte / PX_JE_MM) + 1);
-      const schrift = Math.round(Math.max(15, Math.min(24, h * 0.2)));
-      ctx.font = `${schrift}px "Bleistift Hand", "Patrick Hand", cursive`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'top';
-      ctx.lineCap = 'round';
-      ctx.strokeStyle = ctx.fillStyle = stift;
-      for (let n = von; n <= bis; n++) {
-        const x = mitte + (n - pos) * PX_JE_MM;
-        const cm = n % 10 === 0, halb = n % 5 === 0;
-        const z = zitter(n);
-        const lang = h * (cm ? 0.36 : halb ? 0.25 : 0.15) + (z - 0.5) * 2.5;
-        ctx.globalAlpha = cm ? 0.85 : halb ? 0.65 : 0.42 + z * 0.12;
-        ctx.lineWidth = cm ? 1.6 : 1.1;
-        ctx.beginPath();
-        ctx.moveTo(x + (z - 0.5) * 0.8, 0);
-        ctx.lineTo(x - (z - 0.5) * 0.8, lang);
-        ctx.stroke();
-        if (cm) {
-          ctx.globalAlpha = 0.8;
-          ctx.fillText(String(n / 10), x, lang + 5);
-        }
-      }
-      // Ablesemarke in der Mitte
-      ctx.globalAlpha = 0.9;
-      ctx.strokeStyle = ctx.fillStyle = akzent;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(mitte, 0);
-      ctx.lineTo(mitte, h * 0.62);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(mitte - 7, 0);
-      ctx.lineTo(mitte + 7, 0);
-      ctx.lineTo(mitte, 9);
-      ctx.closePath();
-      ctx.fill();
-      ctx.globalAlpha = 1;
-    }
-    document.fonts?.load?.('20px "Bleistift Hand"').then(zeichnenBald, () => {});
-
-    // ---------- Wert ändern ----------
-    const setze = neu => {
-      pos = Math.max(MIN_MM, Math.min(MAX_MM, neu));
-      const wert = Math.round(pos);
-      const alt = aktiv ? lies(aktiv) : null;
-      if (aktiv && wert !== alt) {
-        // beim Überschreiten eines Zentimeters ganz leicht vibrieren
-        if (alt != null && Math.floor(wert / 10) !== Math.floor(alt / 10)) navigator.vibrate?.(4);
-        schreib(aktiv, wert);
-        zeigeWert(aktiv);
-        if (stelleVon(aktiv) || aktiv === 'hoehe') markieren();
-      }
-      zeichnenBald();
-    };
+    const band = massbandAnbringen(dlg, wert => {
+      schreib(aktiv, wert);
+      zeigeWert(aktiv);
+      if (stelleVon(aktiv) || aktiv === 'hoehe') markieren();
+    });
 
     const bandZu = () => {
       aktiv = null;
-      band.classList.remove('offen');
-      band.setAttribute('aria-hidden', 'true');
-      canvas.tabIndex = -1;
+      band.verbergen();
       tipp.textContent = 'Tippe ein Maß an.';
       markieren();
     };
@@ -305,19 +447,13 @@ export function masseAbfragen(werte = {}, stellen = []) {
     const waehle = f => {
       aktiv = f;
       if (lies(f) == null) schreib(f, START_MM);
-      pos = lies(f);
-      schwung = 0;
       markieren();
       zeigeWert(f);
-      canvas.setAttribute('aria-label', `Maßband: ${feldName(f)}`);
-      canvas.tabIndex = 0;
-      band.removeAttribute('aria-hidden');
-      band.classList.add('offen');
+      band.zeigen(lies(f), feldName(f));
       const s = stelleVon(f);
       tipp.textContent = s && f.endsWith(':h')
         ? `Höhe vom Boden bis ${s.art === 'bauch' ? 'zum' : 'zur'} ${stelleName(st, s)}. Maßband nach links wischen: größer, nach rechts: kleiner.`
-        : 'Maßband nach links wischen: größer, nach rechts: kleiner. Langsam wischen für Millimeter.';
-      zeichnenBald();
+        : WISCH_TIPP;
     };
 
     fetzen.addEventListener('click', e => {
@@ -349,89 +485,10 @@ export function masseAbfragen(werte = {}, stellen = []) {
       }
     });
 
-    // ---------- Wischen ----------
-    let zug = null;   // laufende Wischbewegung
-    let schwung = 0;  // Nachlauf nach schnellem Loslassen (mm/ms)
-    let lauf = 0;     // requestAnimationFrame des Nachlaufs
-
-    canvas.addEventListener('pointerdown', e => {
-      if (!aktiv) return;
-      e.preventDefault();
-      canvas.setPointerCapture(e.pointerId);
-      zug = { id: e.pointerId, x: e.clientX, t: e.timeStamp, v: 0, mmMs: 0 };
-      schwung = 0;
-    });
-    canvas.addEventListener('pointermove', e => {
-      if (!zug || e.pointerId !== zug.id) return;
-      const dx = e.clientX - zug.x;
-      const dt = Math.max(1, e.timeStamp - zug.t);
-      zug.v = zug.v * 0.6 + (Math.abs(dx) / dt) * 0.4;
-      const dmm = (-dx / PX_JE_MM) * verstaerkung(zug.v);
-      zug.mmMs = zug.mmMs * 0.6 + (dmm / dt) * 0.4;
-      zug.x = e.clientX;
-      zug.t = e.timeStamp;
-      setze(pos + dmm);
-    });
-    const loslassen = e => {
-      if (!zug || e.pointerId !== zug.id) return;
-      // schnell losgelassen: das Maßband läuft ein Stück nach
-      if (zug.v > 0.6 && e.timeStamp - zug.t < 80) schwung = Math.max(-0.6, Math.min(0.6, zug.mmMs * 0.5));
-      zug = null;
-      nachlauf();
-    };
-    canvas.addEventListener('pointerup', loslassen);
-    canvas.addEventListener('pointercancel', loslassen);
-
-    // Nachlauf, danach auf den nächsten Millimeter einrasten
-    function nachlauf() {
-      cancelAnimationFrame(lauf);
-      let t0 = performance.now();
-      const schritt = t => {
-        const dt = Math.min(50, t - t0);
-        t0 = t;
-        if (zug || !aktiv) return;
-        if (schwung) {
-          setze(pos + schwung * dt);
-          schwung *= 0.985 ** dt;
-          if (Math.abs(schwung) < 0.005 || pos <= MIN_MM || pos >= MAX_MM) schwung = 0;
-        } else {
-          const ziel = Math.round(pos);
-          if (Math.abs(ziel - pos) < 0.02) { setze(ziel); return; }
-          setze(pos + (ziel - pos) * Math.min(1, dt / 50));
-        }
-        lauf = requestAnimationFrame(schritt);
-      };
-      lauf = requestAnimationFrame(schritt);
-    }
-
-    // Mausrad / Trackpad am Rechner
-    canvas.addEventListener('wheel', e => {
-      if (!aktiv) return;
-      e.preventDefault();
-      schwung = 0;
-      setze(pos + (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : -e.deltaY) / PX_JE_MM);
-      clearTimeout(canvas.rast);
-      canvas.rast = setTimeout(nachlauf, 120);
-    }, { passive: false });
-
-    // Pfeiltasten: 1 mm, mit Umschalt 1 cm
-    dlg.addEventListener('keydown', e => {
-      if (!aktiv || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
-      if (!e.target.closest('[data-f]') && e.target !== canvas) return;
-      e.preventDefault();
-      const s = (e.key === 'ArrowRight' || e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 10 : 1);
-      schwung = 0;
-      setze(Math.round(pos) + s);
-    });
-
-    const onResize = () => zeichnenBald();
-    window.addEventListener('resize', onResize);
-
     // ---------- Ende ----------
     dlg.querySelector('[data-ende="ok"]').addEventListener('click', () => dlg.close('ok'));
     dlg.addEventListener('close', () => {
-      cancelAnimationFrame(lauf);
-      window.removeEventListener('resize', onResize);
+      band.abbauen();
       let res = null;
       if (dlg.returnValue === 'ok') {
         res = { werte: {}, stellen: st.map(s => ({ id: s.id, art: s.art, d: s.d / 10, h: s.h / 10 })) };
@@ -440,9 +497,141 @@ export function masseAbfragen(werte = {}, stellen = []) {
       dlg.remove();
       resolve(res);
     });
-    dlg.showModal();
-    // kein Eingabefeld: nicht gleich ein Maß fokussieren
-    dlg.querySelector('.fetzen h2').tabIndex = -1;
-    dlg.querySelector('.fetzen h2').focus();
+    zettelZeigen(dlg);
+  });
+}
+
+// Ein einzelnes Maß (oder Maß und Höhenlage) einer Stelle mit dem Maßband eintragen –
+// z. B. beim Antippen eines Maßes in der Blaupause.
+//   titel:       Überschrift des Zettels (z. B. „Ø Taille“)
+//   felder:      [{ f, name, wert, schaetzung, skizze, leeren }] – Werte in cm; schaetzung wird
+//                als „≈“ gezeigt und ist der Startwert des Maßbands; skizze: 'hoehe', 'dOben',
+//                'dMax', 'dBoden' oder 'd' / 'h' (Ø bzw. Höhenlage einer Stelle); leeren: der
+//                Radiergummi löscht den Wert wieder
+//   hoehe:       Höhe des Stücks in cm (für die Skizze)
+//   bezeichnung: Name der Stelle zum Ändern (undefined: kein Namensfeld)
+//   entfernen:   Beschriftung des Knopfs, der die Stelle löscht oder ausblendet
+// Ergebnis: { aktion: 'ok' | 'entfernen', werte: { f: cm oder null }, bezeichnung } oder null
+export function massAbfragen({ titel, felder, hoehe = null, bezeichnung, entfernen = '' }) {
+  return new Promise(resolve => {
+    const zuMm = v => (v != null && v !== '' && Number(v) > 0 ? Math.round(Number(v) * 10) : null);
+    const mm = {};
+    const geaendert = new Set();
+    for (const fd of felder) mm[fd.f] = zuMm(fd.wert);
+    let aktiv = null;
+    const fd = f => felder.find(x => x.f === f);
+    const ruhe = `Tippe ein Maß an.${felder.some(x => x.schaetzung > 0) ? ' Werte mit ≈ sind aus dem Foto geschätzt.' : ''}`;
+
+    const { dlg, fetzen } = zettelDialog(titel, `
+      <h2>${escHtml(titel)}</h2>
+      ${bezeichnung !== undefined ? `<label class="field masse-bezeichnung"><span>Bezeichnung</span>
+        <input name="bezeichnung" value="${escHtml(bezeichnung)}" placeholder="z. B. Ø untere Rille" autocomplete="off"></label>` : ''}
+      <div class="masse-inhalt">
+        ${SKIZZE}
+        <ul class="masse-liste">
+          ${felder.map(x => `<li class="masse-einzeln"><button type="button" class="masse-zeile" data-f="${x.f}" aria-pressed="false">
+            <span class="masse-name">${escHtml(x.name)}</span><span class="masse-wert"></span></button>
+            ${x.leeren ? `<button type="button" class="radierer" data-leeren="${x.f}" aria-label="${escHtml(x.name)} löschen" hidden>${RADIERER}</button>` : ''}</li>`).join('')}
+        </ul>
+      </div>
+      <p class="hint masse-tipp">${ruhe}</p>
+      <div class="sheet-buttons">
+        <button type="button" class="btn primary" data-ende="ok">Übernehmen</button>
+        <button type="button" class="btn" data-ende="abbrechen">Abbrechen</button>
+      </div>
+      ${entfernen ? `<div class="sheet-buttons"><button type="button" class="btn danger small" data-ende="entfernen">${escHtml(entfernen)}</button></div>` : ''}`);
+
+    const tipp = dlg.querySelector('.masse-tipp');
+    const skizze = dlg.querySelector('.masse-skizze');
+    const feld = f => dlg.querySelector(`[data-f="${f}"]`);
+
+    const zeigeWert = f => {
+      const el = feld(f).querySelector('.masse-wert');
+      const s = fd(f).schaetzung;
+      el.classList.toggle('geschaetzt', mm[f] == null && s > 0);
+      el.textContent = mm[f] != null ? cmText(mm[f]) : s > 0 ? `≈ ${cmText(Math.round(s * 10))}` : '–';
+      const r = dlg.querySelector(`[data-leeren="${f}"]`);
+      if (r) r.hidden = mm[f] == null;
+    };
+
+    // Lage einer Stelle für die Skizze: eingetragen, sonst geschätzt
+    const stelleMm = () => {
+      const h = felder.find(x => x.skizze === 'h');
+      return h ? mm[h.f] ?? zuMm(h.schaetzung) : null;
+    };
+    const markieren = () => {
+      for (const b of dlg.querySelectorAll('[data-f]')) b.setAttribute('aria-pressed', String(b.dataset.f === aktiv));
+      // ohne gewähltes Maß das erste zeigen, damit klar ist, wo gemessen wird
+      const art = fd(aktiv ?? felder[0].f).skizze;
+      const H = zuMm(hoehe);
+      const h = stelleMm() ?? (H ? H / 2 : START_MM);
+      skizzeMarkieren(skizze, art === 'd' || art === 'h' ? 'stelle' : art, { was: art, h, H });
+    };
+
+    for (const x of felder) zeigeWert(x.f);
+    markieren();
+
+    const band = massbandAnbringen(dlg, wert => {
+      mm[aktiv] = wert;
+      geaendert.add(aktiv);
+      zeigeWert(aktiv);
+      markieren();
+    });
+
+    const waehle = f => {
+      aktiv = f;
+      if (mm[f] == null) {
+        // Startwert: die Schätzung aus dem Foto, sonst 5 cm
+        mm[f] = zuMm(fd(f).schaetzung) ?? START_MM;
+        geaendert.add(f);
+      }
+      zeigeWert(f);
+      markieren();
+      band.zeigen(mm[f], fd(f).name);
+      tipp.textContent = fd(f).skizze === 'h'
+        ? 'Höhe vom Boden bis zu dieser Stelle. Maßband nach links wischen: größer, nach rechts: kleiner.'
+        : WISCH_TIPP;
+    };
+
+    fetzen.addEventListener('click', e => {
+      const b = e.target.closest('[data-f]');
+      if (b) return waehle(b.dataset.f);
+      const r = e.target.closest('[data-leeren]');
+      if (r) {
+        const f = r.dataset.leeren;
+        mm[f] = null;
+        geaendert.add(f);
+        if (aktiv === f) {
+          aktiv = null;
+          band.verbergen();
+          tipp.textContent = ruhe;
+        }
+        zeigeWert(f);
+        markieren();
+        feld(f).focus();
+      }
+    });
+    // neben den Zettel getippt: abbrechen
+    dlg.querySelector('.masse-buehne').addEventListener('click', e => {
+      if (e.target === e.currentTarget) dlg.close('abbrechen');
+    });
+
+    // ---------- Ende ----------
+    for (const b of dlg.querySelectorAll('[data-ende]')) b.addEventListener('click', () => dlg.close(b.dataset.ende));
+    dlg.addEventListener('close', () => {
+      band.abbauen();
+      const aktion = dlg.returnValue;
+      let res = null;
+      if (aktion === 'ok' || aktion === 'entfernen') {
+        const werte = {};
+        // unverändert: der eingetragene Wert bleibt genau erhalten
+        for (const x of felder) werte[x.f] = geaendert.has(x.f) ? (mm[x.f] == null ? null : mm[x.f] / 10) : x.wert ?? null;
+        const name = dlg.querySelector('[name="bezeichnung"]');
+        res = { aktion, werte, bezeichnung: name ? name.value.trim() : undefined };
+      }
+      dlg.remove();
+      resolve(res);
+    });
+    zettelZeigen(dlg);
   });
 }

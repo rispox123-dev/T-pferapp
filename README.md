@@ -4,7 +4,9 @@ Eine Handy-App für Töpferinnen und Töpfer, die eigene Stücke töpfern und ei
 
 ## Was die App kann
 
-### 1. Werkstücke – Bibliothek zum Wiederholen
+Unten wechselst du zwischen **Töpfern**, **Glasieren**, **Glasuren** und **Mehr**. Dabei blättert die Seite um wie in einem Skizzenbuch: vorwärts nach links, zurück nach rechts (bei „Bewegung reduzieren“ im System ohne Animation).
+
+### 1. Töpfern – Werkstücke als Bibliothek zum Wiederholen
 - Fotos des Stücks (direkt mit der Kamera oder aus der Galerie)
 - Tonmenge (g), Tonsorte, Technik, Datum, Serie
 - Maße **nass/frisch**: Höhe, Ø Öffnung, Ø breiteste Stelle, Ø Boden, Wand- und Bodenstärke

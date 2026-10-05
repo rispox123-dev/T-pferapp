@@ -464,7 +464,7 @@ function pieceSketch(p) {
 
 async function viewPieces() {
   const pieces = (await db.getAll('pieces')).sort(byDateDesc);
-  setHeader({ title: 'Werkstücke', actions: pieces.length ? ansichtButton() : '' });
+  setHeader({ title: 'Töpfern', actions: pieces.length ? ansichtButton() : '' });
 
   if (!pieces.length) {
     $app.innerHTML = `<div class="empty">
@@ -2195,6 +2195,61 @@ const ROUTES = [
 
 let routeToken = 0;
 
+// ---------------------------------------------------------------------------
+// Umblättern: Wer unten in der Tableiste wechselt, blättert wie in einem Skizzenbuch um.
+// Die alte Seite wird als Blatt über die neue gelegt und dreht sich um die Bindung weg –
+// vorwärts (Töpfern → Glasieren → Glasuren → Mehr) nach links, zurück nach rechts.
+// ---------------------------------------------------------------------------
+
+const TAB_FOLGE = ['werkstuecke', 'glasieren', 'glasuren', 'mehr'];
+let blatt = null; // die alte Seite, die gleich umgeblättert wird
+let blattNotfall = 0;
+
+function blattAbnehmen(richtung) {
+  blatt?.remove();
+  const el = document.createElement('div');
+  el.className = `blatt ${richtung}`;
+  el.setAttribute('aria-hidden', 'true');
+  el.inert = true;
+  // Abbild der Seite: Kopfzeile fest oben, der Inhalt so weit verschoben wie gerade gescrollt
+  const kopf = document.querySelector('.topbar').cloneNode(true);
+  const inhalt = document.createElement('div');
+  inhalt.className = 'blatt-inhalt';
+  inhalt.style.transform = `translateY(${-window.scrollY}px)`;
+  inhalt.append(Object.assign(document.createElement('div'), { className: 'blatt-abstand' }), $app.cloneNode(true));
+  for (const n of [kopf, ...kopf.querySelectorAll('[id]'), ...inhalt.querySelectorAll('[id]')]) n.removeAttribute('id');
+  inhalt.querySelector('.blatt-abstand').style.height = `${document.querySelector('.topbar').offsetHeight}px`;
+  const seite = document.createElement('div');
+  seite.className = 'blatt-seite';
+  // der schwebende Knopf („+ Neu“) bleibt unten auf dem Blatt
+  seite.append(inhalt, kopf, ...inhalt.querySelectorAll('.fab'));
+  el.append(seite);
+  document.body.append(el);
+  blatt = el;
+  // falls die neue Seite auf sich warten lässt, trotzdem umblättern
+  clearTimeout(blattNotfall);
+  blattNotfall = setTimeout(blattLos, 1500);
+}
+
+// neue Seite steht darunter bereit: das Blatt umschlagen
+function blattLos() {
+  clearTimeout(blattNotfall);
+  const el = blatt;
+  if (!el || el.classList.contains('los')) return;
+  blatt = null;
+  el.addEventListener('animationend', e => { if (e.target.classList.contains('blatt-seite')) el.remove(); });
+  setTimeout(() => el.remove(), 1200); // falls keine Animation läuft
+  requestAnimationFrame(() => el.classList.add('los'));
+}
+
+document.querySelector('.tabbar').addEventListener('click', e => {
+  const a = e.target.closest('a[data-tab]');
+  const aktiv = document.querySelector('.tabbar a.active')?.dataset.tab;
+  if (!a || !aktiv || a.dataset.tab === aktiv) return;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  blattAbnehmen(TAB_FOLGE.indexOf(a.dataset.tab) > TAB_FOLGE.indexOf(aktiv) ? 'vor' : 'zurueck');
+});
+
 async function router() {
   const token = ++routeToken;
   if (typeof history.state?.idx === 'number') historyIdx = history.state.idx;
@@ -2214,7 +2269,10 @@ async function router() {
       console.error(err);
       if (token === routeToken) $app.innerHTML = `<div class="empty"><p>Da ist etwas schiefgelaufen:</p><p class="small">${esc(err.message)}</p></div>`;
     }
-    if (token === routeToken) window.scrollTo(0, 0);
+    if (token === routeToken) {
+      window.scrollTo(0, 0);
+      blattLos();
+    }
     return;
   }
   go('#/werkstuecke', true);

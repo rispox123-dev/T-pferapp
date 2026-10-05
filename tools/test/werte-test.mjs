@@ -1,7 +1,8 @@
 // Test im Browser: Alle Zahlen der App werden mit dem Maßband eingestellt – im Werkstück-
 // Formular (Tonmenge, Maße nass und nach dem Brand, Wand/Boden, Gewicht), im Glasurprotokoll
 // (Glasurschicht, Brand) und bei den Glasuren (Litergewicht, Anteile im Rezept). Keine
-// Zahlenfelder mehr; Werte landen richtig gespeichert in der Datenbank.
+// Zahlenfelder mehr; Werte landen richtig gespeichert in der Datenbank. Dazu das Umblättern
+// beim Wechsel in der Tableiste.
 // Screenshots in tools/test/ausgabe/werte-*.png.
 //
 //   node tools/test/werte-test.mjs
@@ -151,6 +152,22 @@ await page.waitForTimeout(500);
 const glasur = (await alle('glazes'))[0];
 console.log('Glasur:', JSON.stringify({ lg: glasur.litergewicht, rezept: glasur.rezept }));
 pruefe(glasur.rezept[0].anteil === 12.5 && glasur.litergewicht == null, 'Glasur richtig gespeichert');
+
+// ---------- Umblättern in der Tableiste ----------
+pruefe((await page.textContent('.tabbar a[data-tab="werkstuecke"]')).trim() === 'Töpfern', 'Tableiste: „Töpfern“ statt „Werkstücke“');
+await page.click('.tabbar a[data-tab="werkstuecke"]');
+await page.waitForSelector('#piece-grid');
+await page.waitForSelector('.blatt', { state: 'detached', timeout: 3000 });
+pruefe((await page.textContent('#page-title')) === 'Töpfern', 'Überschrift „Töpfern“');
+await page.click('.tabbar a[data-tab="glasuren"]');
+pruefe(!!(await page.$('.blatt.vor')), 'Töpfern → Glasuren: Blatt wird nach vorn umgeblättert');
+await page.waitForTimeout(260);
+await page.screenshot({ path: join(ausgabe, 'werte-5-umblaettern.png') });
+await page.waitForSelector('.blatt', { state: 'detached', timeout: 3000 });
+pruefe((await page.textContent('#page-title')) === 'Glasuren', 'danach: Glasuren');
+await page.click('.tabbar a[data-tab="glasieren"]');
+pruefe(!!(await page.$('.blatt.zurueck')), 'Glasuren → Glasieren: zurückblättern');
+await page.waitForSelector('.blatt', { state: 'detached', timeout: 3000 });
 
 console.log(fehler.length ? `\nFEHLER:\n${fehler.join('\n')}` : '\nAlles in Ordnung.');
 await browser.close();

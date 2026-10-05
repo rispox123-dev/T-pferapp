@@ -935,3 +935,61 @@ dialog.masse::backdrop { background: rgba(40, 36, 30, .25); }
 .radierer:active { color: var(--bad); }
 .radierer:focus-visible { outline: 1.5px dashed var(--muted); outline-offset: 2px; }
 .fetzen .sheet-buttons + .sheet-buttons { margin-top: 0; }
+
+/* ---------- Umblättern zwischen den Bereichen der Tableiste ---------- */
+.blatt {
+  position: fixed;
+  left: 0; right: 0; top: 0;
+  bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
+  z-index: 30;
+  perspective: 2200px;
+  overflow: hidden; /* das Blatt bleibt über der Tableiste */
+  pointer-events: none;
+}
+.blatt-seite {
+  position: absolute; inset: 0;
+  overflow: hidden;
+  background-color: var(--paper);
+  background-image: var(--papier);
+  background-size: 360px 360px;
+  backface-visibility: hidden;
+  transform-origin: left center;
+}
+.blatt.zurueck .blatt-seite { transform-origin: right center; }
+.blatt-seite .topbar { position: absolute; top: 0; left: 0; right: 0; }
+.blatt-inhalt { position: absolute; top: 0; left: 0; right: 0; }
+.blatt-inhalt main { padding-bottom: 0; }
+.blatt-seite > .fab { position: absolute; bottom: 14px; }
+/* das Blatt wird zum Umschlagen hin dunkler … */
+.blatt-seite::after {
+  content: "";
+  position: absolute; inset: 0;
+  background: linear-gradient(to left, rgba(40, 36, 30, .32), rgba(40, 36, 30, .06) 55%, transparent);
+  opacity: 0;
+}
+.blatt.zurueck .blatt-seite::after { background: linear-gradient(to right, rgba(40, 36, 30, .32), rgba(40, 36, 30, .06) 55%, transparent); }
+/* … und wirft einen Schatten an der Bindung auf die neue Seite */
+.blatt::before {
+  content: "";
+  position: absolute; inset: 0;
+  background: linear-gradient(to right, rgba(40, 36, 30, .22), transparent 45%);
+  opacity: 0;
+}
+.blatt.zurueck::before { background: linear-gradient(to left, rgba(40, 36, 30, .22), transparent 45%); }
+.blatt.los .blatt-seite { animation: blatt-vor .62s cubic-bezier(.42, 0, .62, 1) forwards; }
+.blatt.zurueck.los .blatt-seite { animation-name: blatt-zurueck; }
+.blatt.los .blatt-seite::after { animation: blatt-dunkel .62s ease-in forwards; }
+.blatt.los::before { animation: blatt-schatten .62s ease-out forwards; }
+@keyframes blatt-vor {
+  0% { transform: rotateY(0); box-shadow: 0 0 0 rgba(40, 36, 30, 0); }
+  40% { box-shadow: 12px 0 28px rgba(40, 36, 30, .22); }
+  100% { transform: rotateY(-91deg); box-shadow: 18px 0 30px rgba(40, 36, 30, .1); }
+}
+@keyframes blatt-zurueck {
+  0% { transform: rotateY(0); box-shadow: 0 0 0 rgba(40, 36, 30, 0); }
+  40% { box-shadow: -12px 0 28px rgba(40, 36, 30, .22); }
+  100% { transform: rotateY(91deg); box-shadow: -18px 0 30px rgba(40, 36, 30, .1); }
+}
+@keyframes blatt-dunkel { to { opacity: 1; } }
+@keyframes blatt-schatten { 0% { opacity: 0; } 35% { opacity: 1; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .blatt { display: none; } }

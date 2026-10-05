@@ -15,6 +15,7 @@ Eine Handy-App für Töpferinnen und Töpfer, die eigene Stücke töpfern und ei
 
 ### Blaupause aus dem Foto
 - **Geführte Aufnahme** („Foto für Blaupause“): Eine Maske zeigt den Umriss einer typischen Form (Becher/Tasse, Schüssel, Vase), die Mittellinie, die Standlinie und die Augenhöhe. Eine **Wasserwaage** (Lagesensor) wird grün, wenn das Handy senkrecht und gerade ist. Hinweise wie „Näher heran“, „Standfläche auf die Standlinie“ oder „Mehr Licht“ führen zum besten Winkel: **frontal, Kamera auf halber Höhe, Henkel zur Seite**.
+- **Maße gleich nach dem Foto**: Sobald ein Foto hinzugefügt ist (geführt, Kamera oder Galerie), erscheint ein herausgerissener Zettel mit **Höhe, Ø Öffnung, Ø breiteste Stelle und Ø Fuß**. Ein Maß antippen → am unteren Rand erscheint ein **Maßband**. Nach links wischen macht den Wert größer, nach rechts kleiner; langsam gewischt ist jeder Teilstrich **genau 1 mm**, schnell gewischt springt der Wert in großen Schritten. Startwert 5 cm. Mit den genauen Maßen wird die Blaupause am besten
 - Die Neigung des Handys und die Brennweite werden mit dem Foto gespeichert; damit rechnet die Erkennung die Perspektive genau heraus (bei Galeriefotos wird die Brennweite aus den EXIF-Daten gelesen).
 - **Erkennung**: Zuerst wird die **Mittelachse** gesucht – dort, wo viele Kanten spiegelgleich links und rechts liegen und das Stück auch innen spiegelgleich aussieht. Dann wird der Umriss **für beide Seiten gemeinsam** verfolgt: Ein Drehteil ist symmetrisch, Dinge im Hintergrund (Bilder, Regalkanten, Nachbargefäße) fast nie dazu. Die besser belichtete Seite (**Leitseite**) trägt den Umriss auch dort, wo die andere im Schatten liegt. Farbmodelle für Stück und Hintergrund vertragen Schatten und Glanzlichter. Was im Schatten, in Spiegelungen oder hinter Farbwechseln (z. B. zweifarbig getaucht, unglasierter Fuß) verloren geht, ergänzt die App aus ihrem **Formwissen** – gelernt aus einer Datenbank mit 3200 Bechern, Tassen, Schüsseln, Schalen und Vasen.
 - Henkel werden erkannt und vermessen: Höhe, wie weit er absteht, Ansatzhöhen. Glanzlichter und Schattenseiten zerreißen den Henkel nicht mehr in Teilstücke; ragt er über den Rahmen der Aufnahme-Maske hinaus, erweitert die App den Ausschnitt selbst
@@ -79,6 +80,7 @@ npx http-server -p 8080
 | `js/db.js` | Speicherung auf dem Gerät (IndexedDB) |
 | `js/image.js` | Fotos verkleinern, Brennweite aus EXIF |
 | `js/kamera.js` | Geführte Aufnahme: Maske, Wasserwaage, Live-Hinweise |
+| `js/massband.js` | Grundmaße nach dem Foto abfragen: Zettel mit Risskante, Maßband mit geschwindigkeitsabhängigem Wischen |
 | `js/kontur.js` | Umriss begradigen: gerade Wände, ruhige Bögen, scharfe Kanten |
 | `js/erkennung.js` | Formerkennung: Stück vom Hintergrund trennen, Kontur je Seite, Leitseite, Perspektive, Henkel |
 | `js/formprior.js` | Formwissen: Kontur an die gelernten Formfamilien anpassen, verdeckte Stellen vorhersagen |
@@ -97,6 +99,7 @@ node tools/test/echt.mjs foto.png        # echtes Foto erkennen und Ergebnis ein
 node tools/test/blaupausen.mjs 6         # Testfotos und Blaupausen nebeneinander ansehen
 node tools/test/henkel-ecken.mjs 40      # Henkel (wie viel erfasst) und obere Ecken an Bechern/Tassen, mit --unschaerfe
 node tools/test/app-test.mjs             # Ende-zu-Ende im Browser mit simulierter Kamera, Vollbild, Zoom, Henkel-Werkzeug
+node tools/test/massband-test.mjs        # Maßabfrage nach dem Foto: Startwert, 1-mm-genaues und schnelles Wischen, Übernahme
 ```
 
 - `tools/formen/typologie.mjs` – Formfamilien gedrehter Gefäße (Proportionen, Fuß, Bauch, Taille, Schulter, Hals, Lippe)

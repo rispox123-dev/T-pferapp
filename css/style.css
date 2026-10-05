@@ -742,3 +742,87 @@ body.kamera-offen { overflow: hidden; }
 .bp-pruefen-bild path.h { stroke: #ff3d6e; fill: none; }
 .bp-pruefen p { margin: 0; }
 .bp-pruefen.unsicher p strong { color: var(--warn); font-weight: 400; }
+
+/* ---------- Grundmaße nach dem Foto: ein herausgerissener Zettel und ein Maßband ---------- */
+dialog.masse {
+  position: fixed; inset: 0;
+  width: 100%; height: 100%; max-width: none; max-height: none;
+  margin: 0; padding: 0; border: 0;
+  background: transparent;
+  color: var(--text);
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+dialog.masse[open] { display: flex; flex-direction: column; }
+dialog.masse::backdrop { background: rgba(40, 36, 30, .25); }
+.masse-buehne {
+  flex: 1; min-height: 0;
+  display: flex; align-items: center; justify-content: center;
+  padding: calc(14px + env(safe-area-inset-top)) 16px 14px;
+  overflow-y: auto;
+}
+.fetzen-schatten {
+  position: relative;
+  width: min(420px, 100%);
+  margin: auto 0;
+  filter: drop-shadow(0 7px 12px rgba(40, 36, 30, .26)) drop-shadow(0 1px 2px rgba(40, 36, 30, .16));
+  transform: rotate(-1.2deg);
+}
+/* heller Faserrand an der Risskante */
+.fetzen-rand { position: absolute; inset: 0; background: #fdfcf8; }
+.fetzen {
+  position: relative;
+  padding: 26px 24px 16px;
+  background-color: var(--paper);
+  background-image: var(--papier);
+  background-size: 360px 360px;
+}
+.fetzen h2 { margin: 0 0 2px; font-size: 1.45rem; font-weight: 400; outline: none; }
+.fetzen .hint { margin: 0 0 10px; }
+.masse-inhalt { display: flex; gap: 12px; align-items: center; }
+.masse-skizze { flex: 0 0 72px; height: 81px; overflow: visible; }
+.masse-skizze path, .masse-skizze ellipse { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.masse-skizze .topf { stroke: var(--text); stroke-width: 2; opacity: .75; }
+.masse-skizze .mass { stroke: var(--muted); stroke-width: 1.4; opacity: .35; transition: opacity .2s, stroke .2s; }
+.masse-skizze .mass.an { stroke: var(--accent); stroke-width: 2.2; opacity: 1; }
+.masse-liste { flex: 1; min-width: 0; list-style: none; margin: 0; padding: 0; }
+.masse-zeile {
+  --strich: var(--strich-ocker);
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  width: 100%; min-height: 44px;
+  padding: 6px 4px 8px;
+  border: 0; border-bottom: 1px solid var(--line);
+  background: none;
+  font-size: 1.15rem; text-align: left;
+  cursor: pointer;
+}
+.masse-liste li:last-child .masse-zeile { border-bottom: 0; }
+.masse-name { color: var(--muted); }
+.masse-wert { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.masse-zeile[aria-pressed="true"] .masse-name { color: var(--text); }
+.masse-zeile[aria-pressed="true"] .masse-wert { padding: 0 3px 3px; background: var(--strich) no-repeat center bottom / 100% 9px; font-size: 1.25rem; }
+.masse-zeile:focus-visible { outline: 1.5px dashed var(--muted); outline-offset: 2px; }
+.fetzen .masse-tipp { margin: 10px 0 0; min-height: 2.6em; }
+.fetzen .sheet-buttons { margin-top: 6px; }
+
+/* Maßband: 15 % der Bildschirmhöhe am unteren Rand */
+.massband {
+  flex: 0 0 auto;
+  height: calc(15vh + env(safe-area-inset-bottom));
+  height: calc(15dvh + env(safe-area-inset-bottom));
+  padding-bottom: env(safe-area-inset-bottom);
+  background-color: var(--paper);
+  background-image: linear-gradient(rgba(220, 189, 114, .14), rgba(220, 189, 114, .14)), var(--papier);
+  background-size: auto, 360px 360px;
+  box-shadow: 0 -10px 16px -10px rgba(40, 36, 30, .3);
+  transform: translateY(100%);
+  visibility: hidden;
+  transition: transform .25s ease-out, visibility 0s .25s;
+}
+.massband.offen { transform: none; visibility: visible; transition: transform .25s ease-out; }
+.massband canvas {
+  display: block; width: 100%; height: 100%;
+  touch-action: none; cursor: ew-resize; outline: none;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 14%, #000 86%, transparent);
+  mask-image: linear-gradient(to right, transparent, #000 14%, #000 86%, transparent);
+}

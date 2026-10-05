@@ -71,8 +71,16 @@ await page.screenshot({ path: join(ausgabe, 'app-2-kamera-gerade.png') });
 console.log('Hinweis (gerade):', await page.textContent('.kamera-hinweis'));
 await page.click('.kamera-ausloeser');
 await page.waitForSelector('.pp-item img[src]', { timeout: 10000 });
+// nach dem Foto: Grundmaße abfragen (Zettel + Maßband); Höhe 10 cm mit den Pfeiltasten
+await page.waitForSelector('dialog.masse[open]', { timeout: 10000 });
+await page.click('.masse-zeile[data-k="hoehe"]');
+for (let i = 0; i < 5; i++) await page.keyboard.press('Shift+ArrowRight');
+await page.waitForTimeout(300);
+await page.screenshot({ path: join(ausgabe, 'app-2b-masse.png') });
+await page.click('[data-ende="ok"]');
+await page.waitForSelector('dialog.masse', { state: 'detached' });
+if ((await page.inputValue('input[name="nass.hoehe"]')) !== '10') fehler.push('Maßabfrage: Höhe nicht übernommen');
 await page.fill('input[name="name"]', 'Testbecher');
-await page.fill('input[name="nass.hoehe"]', '10');
 await page.click('button[type="submit"]');
 await page.waitForSelector('.bp-card svg', { timeout: 20000 });
 await page.waitForTimeout(400);

@@ -99,8 +99,19 @@ function setHeader({ title, back = null, actions = '' }) {
 }
 
 const ICON_PLUS = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>';
-const ICON_GUIDE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M9.5 7.5h5M10 7.5c0 2-1.8 3-1.8 6a3.8 3.8 0 0 0 7.6 0c0-3-1.8-4-1.8-6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="2.5 2"/><path d="M12 5v14" stroke="currentColor" stroke-width="1" stroke-dasharray="1 2"/></svg>';
 const ICON_VOLLBILD = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+// Mit Bleistift gezeichnet (ohne Rand): Kamera zum Fotografieren, Bilderrahmen für die Galerie
+const ICON_KAMERA = `<svg class="bleistift" viewBox="0 0 36 36" aria-hidden="true">
+  <path d="M6.2 11.6C9.6 11.1 11 11.4 12.4 10.9L14.3 7.6C16.8 7.2 19.6 7.4 22.1 7.3L23.8 10.7C26.3 11 28.6 10.8 30.4 11.4C31.1 16.6 30.9 23.2 30.6 28.4C22.6 29.1 13.8 28.8 6.5 29.1C5.9 23.2 5.8 17.4 6.2 11.6Z"/>
+  <path d="M18.3 14.2C21.6 14 24.3 16.6 24.1 20.1S21.2 25.9 17.8 25.7 12.1 22.9 12.3 19.6 15.2 14.1 18.6 14.4"/>
+  <path d="M15.4 19.4C15.7 17.8 16.9 16.9 18.4 16.8M25.8 14.4C26.7 14.2 27.5 14.3 28.3 14.2M7.6 14.6C8.6 14.5 9.6 14.6 10.5 14.4" class="duenn"/>
+</svg>`;
+const ICON_RAHMEN = `<svg class="bleistift" viewBox="0 0 36 36" aria-hidden="true">
+  <path d="M5.6 7.4C13.4 6.8 22.4 7.1 30.6 6.7C31 14.6 30.8 22.6 31.2 30.6C22.9 31.1 14.1 30.7 5.9 31.2C5.5 23.2 5.8 15.3 5.6 7.4Z"/>
+  <path d="M9.8 11.4C15.3 11.1 21 11.3 26.6 11C26.8 16 26.7 21 26.9 26.1C21.2 26.4 15.6 26.2 10 26.5C9.8 21.4 9.9 16.4 9.8 11.4Z"/>
+  <path d="M5.8 7.5L9.8 11.4M30.5 6.8L26.6 11M31.1 30.5L26.9 26.1M6 31.1L10 26.5M11.6 7.1L18.1 2.6L24.8 6.9" class="duenn"/>
+  <path d="M10.6 23.8C12.7 21.2 14.5 19.2 16.6 21.6C18.3 19.1 20.4 17 22.6 19.4C24 20.9 25.1 22.3 26.3 23.6M21.7 14.6C21.6 13.7 22.4 13.1 23.2 13.3C24.1 13.5 24.2 14.6 23.6 15.1C23 15.7 21.9 15.5 21.7 14.6Z" class="duenn"/>
+</svg>`;
 const ICON_CAMERA = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-2.5h6L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>';
 
 // ---------------------------------------------------------------------------
@@ -301,14 +312,17 @@ async function handleFiles(input, onId) {
   }
 }
 
+// Zwei gezeichnete Knöpfe: „Foto“ (geführte Aufnahme für die Blaupause, ohne Kamerazugriff im
+// Browser die Kamera des Handys) und „Galerie“
+const fotoKnoepfe = foto => `<button type="button" class="foto-knopf foto" data-pick="${foto}" aria-label="${foto === 'guided' ? 'Foto für die Blaupause aufnehmen' : 'Foto aufnehmen'}">${ICON_KAMERA}<span>Foto</span></button>
+  <button type="button" class="foto-knopf galerie" data-pick="lib" aria-label="Foto aus der Galerie">${ICON_RAHMEN}<span>Galerie</span></button>`;
+
 // Mehrere Fotos (Werkstück); onAdded: nach jedem neu hinzugefügten Foto (bzw. jeder Auswahl)
 function mountMultiPhoto(container, ids, session, onAdded) {
   const render = () => {
     container.innerHTML = `<div class="photo-picker">
       ${ids.map(id => `<div class="pp-item">${thumb(id, { zoom: true })}<button type="button" class="pp-remove" data-id="${id}" aria-label="Foto entfernen">×</button></div>`).join('')}
-      ${kameraVerfuegbar() ? `<button type="button" class="pp-add pp-guided" data-pick="guided">${ICON_GUIDE}Foto für<br>Blaupause</button>` : ''}
-      <button type="button" class="pp-add" data-pick="cam">${ICON_CAMERA}Foto<br>aufnehmen</button>
-      <button type="button" class="pp-add" data-pick="lib">${ICON_PLUS}Aus<br>Galerie</button>
+      ${fotoKnoepfe(kameraVerfuegbar() ? 'guided' : 'cam')}
       ${fileInputs('pp', true)}
     </div>`;
     hydratePhotos(container);
@@ -347,9 +361,8 @@ function mountSinglePhoto(container, state, key, session, placeholder) {
     const id = state[key];
     container.innerHTML = `<div class="single-photo">
       ${thumb(id, { placeholder, zoom: true })}
-      <div class="btn-row">
-        <button type="button" class="btn small" data-pick="cam">${ICON_CAMERA.replace('<svg', '<svg width="20" height="20"')} ${id ? 'Neu aufnehmen' : 'Foto aufnehmen'}</button>
-        <button type="button" class="btn small" data-pick="lib">Aus Galerie</button>
+      <div class="foto-knoepfe">
+        ${fotoKnoepfe('cam')}
         ${id ? '<button type="button" class="btn small danger" data-remove>Entfernen</button>' : ''}
       </div>
       ${fileInputs('sp', false)}
@@ -1066,7 +1079,7 @@ async function viewBlueprintEditor(id) {
   $app.innerHTML = `
     <div class="info-box"><p>Orange ist der erkannte Umriss, rot der Henkel, die gestrichelte Linie die Mittellinie. Die besser belichtete Seite (<strong>Leitseite</strong>) gibt die Form vor; blau markierte Stellen hat die App aus ihrem Formwissen ergänzt. Hat sie ein anderes Objekt erwischt, <strong>tippe auf dein Stück</strong>. Fehlt der Henkel oder ein Teil davon, male ihn mit <strong>Henkel</strong> nach – der Körper bleibt dabei, wie er ist. Fehlt am Körper etwas, nimm <strong>Hinzufügen</strong>; Schatten nimmst du mit <strong>Entfernen</strong> weg. Zum Malen öffnet sich das Foto im Vollbild: <strong>mit zwei Fingern zoomen</strong> und verschieben.</p></div>
     <div class="bp-choice">${p.photos.map(ph => `<button type="button" data-photo-id="${ph}" class="${ph === st.photoId ? 'active' : ''}" aria-label="Dieses Foto verwenden">${thumb(ph)}</button>`).join('')}
-      ${kameraVerfuegbar() ? `<button type="button" class="bp-neu" id="bp-foto" aria-label="Neues Foto für die Blaupause aufnehmen">${ICON_GUIDE}<span>Neues Foto</span></button>` : ''}</div>
+      ${kameraVerfuegbar() ? `<button type="button" class="bp-neu foto-knopf foto" id="bp-foto" aria-label="Neues Foto für die Blaupause aufnehmen">${ICON_KAMERA}<span>Foto</span></button>` : ''}</div>
     <label class="field"><span>Art des Stücks</span><select id="bp-gruppe">
       <option value="">Automatisch erkennen</option>
       ${GRUPPEN.map(g => `<option value="${g.key}" ${st.gruppe === g.key ? 'selected' : ''}>${esc(g.label)}</option>`).join('')}

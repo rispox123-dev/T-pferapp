@@ -3,7 +3,7 @@ import { processImage, blobToDataUrl, dataUrlToBlob, brennweiteAusExif } from '.
 import { findPoints, abgleich, estimate, renderBlueprint, hashSeed, alteWerte, istAutoName } from './blueprint.js';
 import { analyze, loadForAnalysis, cropFromGuide, DEFAULT_SENS } from './erkennung.js';
 import { gefuehrteAufnahme, kameraVerfuegbar, GRUPPEN } from './kamera.js';
-import { masseAbfragen, massAbfragen, stelleName, wertText } from './massband.js';
+import { masseAbfragen, massAbfragen, stelleName, wertText, zettelDialog, zettelZeigen } from './massband.js';
 import { rezeptVomFoto } from './rezept-foto.js';
 
 // ---------------------------------------------------------------------------
@@ -91,8 +91,11 @@ function finish(hash, edited) {
   else go(hash, true);
 }
 
-function setHeader({ title, back = null, actions = '' }) {
+const $titelZusatz = document.getElementById('title-zusatz');
+// zusatz: HTML direkt neben dem Titel (z. B. der Versions-Knopf einer Glasur)
+function setHeader({ title, back = null, actions = '', zusatz = '' }) {
   $title.textContent = title;
+  $titelZusatz.innerHTML = zusatz;
   document.title = title === 'Töpferbuch' ? title : `${title} · Töpferbuch`;
   $back.hidden = !back;
   $back.onclick = back ? () => (historyIdx > 0 ? history.back() : go(back, true)) : null;
@@ -383,6 +386,33 @@ function mountSinglePhoto(container, state, key, session, placeholder) {
   });
   container.addEventListener('change', e => {
     if (e.target.type === 'file') handleFiles(e.target, replace);
+  });
+  render();
+}
+
+// Mehrere Fotos ohne Blaupause (z. B. Testkacheln einer Glasurversion): Kamera oder Galerie
+function mountFotos(container, ids, session, placeholder) {
+  const render = () => {
+    container.innerHTML = `<div class="photo-picker">
+      ${ids.map(id => `<div class="pp-item">${thumb(id, { zoom: true })}<button type="button" class="pp-remove" data-id="${id}" aria-label="Foto entfernen">×</button></div>`).join('')}
+      ${ids.length ? '' : `<div class="pp-item pp-leer">${thumb(null, { placeholder })}</div>`}
+      ${fotoKnoepfe('cam')}
+      ${fileInputs('pp', true)}
+    </div>`;
+    hydratePhotos(container);
+  };
+  container.addEventListener('click', e => {
+    const rm = e.target.closest('.pp-remove');
+    if (rm) {
+      ids.splice(ids.indexOf(rm.dataset.id), 1);
+      session.remove(rm.dataset.id);
+      return render();
+    }
+    const pick = e.target.closest('[data-pick]');
+    if (pick) container.querySelector(pick.dataset.pick === 'cam' ? '.pp-cam' : '.pp-lib').click();
+  });
+  container.addEventListener('change', e => {
+    if (e.target.type === 'file') handleFiles(e.target, id => { ids.push(id); session.add(id); render(); });
   });
   render();
 }
@@ -1498,7 +1528,7 @@ async function viewBlueprintEditor(id) {
 // ---------------------------------------------------------------------------
 
 function layerSummary(l) {
-  const parts = [l.glazeName || 'Glasur'];
+  const parts = [lageName(l) || 'Glasur'];
   if (l.art && l.art !== 'Tauchen') parts.push(l.art);
   if (isNum(l.dauer)) parts.push(`${fmt(l.dauer)} s`);
   if (isNum(l.wdh) && Number(l.wdh) > 1) parts.push(`${fmt(l.wdh, 0)}×`);
@@ -1578,7 +1608,7 @@ async function viewFiring(id) {
     <div class="card">
       <h2>Glasurauftrag</h2>
       ${(f.lagen || []).map((l, i) => `<dl class="facts" style="${i ? 'margin-top:12px;padding-top:12px;border-top:1px solid var(--line)' : ''}">
-        <dt>${f.lagen.length > 1 ? `${i + 1}. Glasur` : 'Glasur'}</dt><dd>${l.glazeId ? `<a href="#/glasuren/${l.glazeId}">${esc(l.glazeName)}</a>` : esc(l.glazeName || '–')}</dd>
+        <dt>${f.lagen.length > 1 ? `${i + 1}. Glasur` : 'Glasur'}</dt><dd>${l.glazeId ? `<a href="#/glasuren/${l.glazeId}${l.versionId ? `?v=${l.versionId}` : ''}">${esc(lageName(l))}</a>` : esc(l.glazeName || '–')}</dd>
         <dt>Auftrag</dt><dd>${esc(l.art || 'Tauchen')}</dd>
         <dt>${l.art === 'Tauchen' || !l.art ? 'Tauchdauer' : 'Dauer'}</dt><dd>${withUnit(l.dauer, 'Sek.')}</dd>
         <dt>Wiederholungen</dt><dd>${isNum(l.wdh) ? `${fmt(l.wdh, 0)}×` : '–'}</dd>
@@ -1638,23 +1668,27 @@ async function viewFiring(id) {
 
 let compareMode = 'schieber';
 
-function mountCompare(container, beforeId, afterId) {
+// beschriftung: [links, rechts] – Vorgabe vor/nach dem Brand; beim Vergleich von Glasurversionen
+// deren Namen
+function mountCompare(container, beforeId, afterId, beschriftung = null) {
+  const [lang1, lang2] = beschriftung || ['Vor dem Brand', 'Nach dem Brand'];
+  const [kurz1, kurz2] = beschriftung || ['Vorher', 'Nachher'];
   const render = () => {
     container.innerHTML = `<div class="segmented compare-modes" role="radiogroup" aria-label="Vergleichsansicht">
         ${[['schieber', 'Schieberegler'], ['blende', 'Überblenden'], ['neben', 'Nebeneinander']].map(([v, l]) =>
           `<label><input type="radio" name="cmode" value="${v}" ${compareMode === v ? 'checked' : ''}><span class="none">${l}</span></label>`).join('')}
       </div>
       ${compareMode === 'neben' ? `<div class="compare-side">
-          <figure>${thumb(beforeId, { full: true, zoom: true })}<figcaption>Vor dem Brand</figcaption></figure>
-          <figure>${thumb(afterId, { full: true, zoom: true })}<figcaption>Nach dem Brand</figcaption></figure>
+          <figure>${thumb(beforeId, { full: true, zoom: true })}<figcaption>${esc(lang1)}</figcaption></figure>
+          <figure>${thumb(afterId, { full: true, zoom: true })}<figcaption>${esc(lang2)}</figcaption></figure>
         </div>` : `<div class="compare-stack">
-          <img data-photo="${beforeId}" data-full alt="Vor dem Brand">
-          <img data-photo="${afterId}" data-full alt="Nach dem Brand" class="top">
+          <img data-photo="${beforeId}" data-full alt="${esc(lang1)}">
+          <img data-photo="${afterId}" data-full alt="${esc(lang2)}" class="top">
           ${compareMode === 'schieber' ? '<div class="divider"></div>' : ''}
-          <span class="lbl l">Vorher</span><span class="lbl r">Nachher</span>
+          <span class="lbl l">${esc(kurz1)}</span><span class="lbl r">${esc(kurz2)}</span>
         </div>
         <input type="range" class="compare-range" min="0" max="100" value="50" aria-label="${compareMode === 'schieber' ? 'Trennlinie verschieben' : 'Überblenden'}">
-        <p class="small muted" style="margin:0 0 14px;text-align:center">${compareMode === 'schieber' ? 'Ziehe im Bild oder am Regler, um vorher und nachher zu vergleichen.' : 'Regler nach rechts = mehr „Nachher“. Ideal, um Stellen genau übereinanderzulegen.'}</p>`}`;
+        <p class="small muted" style="margin:0 0 14px;text-align:center">${compareMode === 'schieber' ? `Ziehe im Bild oder am Regler, um ${beschriftung ? 'die beiden' : 'vorher und nachher'} zu vergleichen.` : `Regler nach rechts = mehr „${esc(kurz2)}“. Ideal, um Stellen genau übereinanderzulegen.`}</p>`}`;
     hydratePhotos(container);
 
     const stack = container.querySelector('.compare-stack');
@@ -1688,9 +1722,24 @@ function mountCompare(container, beforeId, afterId) {
   render();
 }
 
+// erste Glasurschicht, wenn von der Seite einer Glasur(version) aus glasiert wird
+function glasurVorlage(g, vid) {
+  if (!g) return { glazeName: '', litergewicht: null };
+  const v = versionVon(g, vid);
+  return { glazeName: g.name, versionId: v?.id || null, versionLabel: v ? versionLabel(v) : '', litergewicht: versionDaten(g, v?.id).litergewicht ?? null };
+}
+
+// Auswahl der Glasur in einer Glasurschicht: Glasuren mit Versionen stehen mit jeder Version da
+// (Wert „glasurId|versionId“)
+function glasurOptionen(glazes) {
+  return glazes.flatMap(g => (g.versionen?.length
+    ? versionsBaum(g).map(n => ({ value: n.id === ORIGINAL ? g.id : `${g.id}|${n.id}`, label: `${g.name} – ${n.label}` }))
+    : [{ value: g.id, label: g.name }]));
+}
+
 function layerHtml(l, i, glazes) {
-  const opts = glazes.map(g => ({ value: g.id, label: g.name }));
-  const selected = l.glazeId || (l.glazeName ? '__frei' : '');
+  const opts = glasurOptionen(glazes);
+  const selected = l.glazeId ? (l.versionId ? `${l.glazeId}|${l.versionId}` : l.glazeId) : (l.glazeName ? '__frei' : '');
   return `<div class="layer" data-i="${i}">
     <div class="layer-head"><span>${i + 1}. Glasurschicht</span>${i ? '<button type="button" class="remove-btn" data-remove-layer aria-label="Schicht entfernen">×</button>' : ''}</div>
     ${glazes.length
@@ -1713,11 +1762,15 @@ function readLayers(container, glazes) {
     const num = n => (isNum(q(n)) ? Number(q(n)) : null);
     const sel = el.querySelector('[name="glazeId"]');
     const free = el.querySelector('[name="glazeName"]')?.value?.trim() || '';
-    let glazeId = sel ? sel.value : '';
-    let glazeName = '';
-    if (!sel || glazeId === '__frei') { glazeId = ''; glazeName = free; }
-    else if (glazeId) glazeName = glazes.find(g => g.id === glazeId)?.name || '';
-    return { glazeId: glazeId || null, glazeName, art: q('art') || 'Tauchen', dauer: num('dauer'), wdh: num('wdh'), pause: num('pause'), litergewicht: num('litergewicht') };
+    let [glazeId, versionId = null] = (sel ? sel.value : '').split('|');
+    let glazeName = '', vLabel = '';
+    if (!sel || glazeId === '__frei') { glazeId = ''; versionId = null; glazeName = free; }
+    else if (glazeId) {
+      const g = glazes.find(x => x.id === glazeId);
+      glazeName = g?.name || '';
+      vLabel = versionId ? versionLabel(versionVon(g, versionId)) : '';
+    }
+    return { glazeId: glazeId || null, versionId, versionLabel: vLabel, glazeName, art: q('art') || 'Tauchen', dauer: num('dauer'), wdh: num('wdh'), pause: num('pause'), litergewicht: num('litergewicht') };
   });
 }
 
@@ -1734,7 +1787,7 @@ async function viewFiringForm(id, params) {
       datum: today(),
       pieceId: params.get('stueck') || vorlage?.pieceId || '',
       titel: vorlage?.titel || '',
-      lagen: vorlage ? structuredClone(vorlage.lagen) : [{ glazeId: glazeParam?.id || '', glazeName: glazeParam?.name || '', art: 'Tauchen', wdh: 1, litergewicht: glazeParam?.litergewicht ?? null }],
+      lagen: vorlage ? structuredClone(vorlage.lagen) : [{ glazeId: glazeParam?.id || '', ...glasurVorlage(glazeParam, params.get('version')), art: 'Tauchen', wdh: 1 }],
       brand: vorlage ? { ...vorlage.brand, datum: '' } : {},
       vorher: [],
       nachher: [],
@@ -1809,9 +1862,11 @@ async function viewFiringForm(id, params) {
     if (e.target.name === 'glazeId') {
       const layer = e.target.closest('.layer');
       layer.querySelector('.free-name').hidden = e.target.value !== '__frei';
-      const g = glazes.find(x => x.id === e.target.value);
+      const [gid, vid] = e.target.value.split('|');
+      const g = glazes.find(x => x.id === gid);
+      const lgWert = g && versionDaten(g, vid || ORIGINAL).litergewicht;
       const lg = layer.querySelector('[name="litergewicht"]');
-      if (g && isNum(g.litergewicht) && !lg.value) wertSetzen(lg, g.litergewicht);
+      if (isNum(lgWert) && !lg.value) wertSetzen(lg, lgWert);
     }
   });
   layersEl.addEventListener('click', e => {
@@ -1859,7 +1914,7 @@ async function viewFiringForm(id, params) {
     };
     if (!obj.titel) {
       const piece = pieces.find(p => p.id === obj.pieceId);
-      obj.titel = [piece?.name, lagenNeu.map(l => l.glazeName).filter(Boolean).join(' + ')].filter(Boolean).join(' – ') || 'Glasurprobe';
+      obj.titel = [piece?.name, lagenNeu.map(lageName).filter(Boolean).join(' + ')].filter(Boolean).join(' – ') || 'Glasurprobe';
     }
     if (obj.afterPhoto && !obj.brand.datum) obj.brand.datum = today();
     await db.put('firings', obj);
@@ -1882,6 +1937,20 @@ function rezeptSumme(rows) {
   }
   return s;
 }
+
+// Summenzeilen unter dem Rezept im Formular
+function summeText(rows) {
+  const { basis, zusatz } = rezeptSumme(rows);
+  if (!basis && !zusatz) return '';
+  return zusatz
+    ? `Summe ohne Zusätze: ${fmt(basis, 2)}<br>Zusätze: ${fmt(zusatz, 2)}<br><strong>Gesamt mit Zusätzen: ${fmt(basis + zusatz, 2)}</strong>`
+    : `Summe: ${fmt(basis, 2)}`;
+}
+// Formularzeilen → gespeichertes Rezept
+const rezeptAusZeilen = rows => rows.filter(r => String(r.a).trim()).map(r => {
+  const v = String(r.b).trim().replace(',', '.');
+  return { rohstoff: String(r.a).trim(), anteil: isNum(v) ? Number(v) : null };
+});
 
 // Neue Charge: Menge Trockenglasur (g) je Glasur merken (nur auf diesem Gerät, nur Bequemlichkeit)
 const CHARGE_KEY = id => `charge:${id}`;
@@ -1907,7 +1976,7 @@ function chargeTabelle(g, menge) {
       <tr class="sum"><td>Trockenglasur gesamt</td><td>${gramm(menge)}</td></tr>
       ${isNum(g.wasser) ? `<tr class="sum wasser"><td>Wasser (${fmt(g.wasser, 0)} %)</td><td>${fmt(Math.round(menge * g.wasser / 100), 0)} ml</td></tr>` : ''}
     </table>
-    ${!isNum(g.wasser) ? `<p class="hint charge-hinweis">Für die Wassermenge trage unter <a href="#/glasuren/${g.id}/bearbeiten">Bearbeiten</a> ein, wie viel Prozent Wasser die Glasur braucht.</p>` : ''}
+    ${!isNum(g.wasser) ? `<p class="hint charge-hinweis">Für die Wassermenge trage unter <a href="${g.bearbeiten}">Bearbeiten</a> ein, wie viel Prozent Wasser die Glasur braucht.</p>` : ''}
     ${ohne.length ? `<p class="hint charge-hinweis">Ohne Anteil, nicht berechnet: ${ohne.map(z => esc(z.name)).join(', ')}</p>` : ''}`;
 }
 
@@ -1975,7 +2044,7 @@ async function viewGlazes() {
       <span class="row-body">
         <span class="row-title">${esc(g.name)}</span>
         <span class="row-sub">${esc([g.brennbereich, isNum(g.litergewicht) ? `${fmt(g.litergewicht, 0)} g/l` : ''].filter(Boolean).join(' · ') || g.beschreibung || '')}</span>
-        <span class="badges">${n ? `<span class="badge accent">${n} Protokoll${n > 1 ? 'e' : ''}</span>` : '<span class="badge">noch nicht verwendet</span>'}</span>
+        <span class="badges">${n ? `<span class="badge accent">${n} Protokoll${n > 1 ? 'e' : ''}</span>` : '<span class="badge">noch nicht verwendet</span>'}${g.versionen?.length ? `<span class="badge">${g.versionen.length + 1} Versionen</span>` : ''}</span>
       </span>
     </a>`;
   }).join('')}</div>
@@ -1983,16 +2052,137 @@ async function viewGlazes() {
   hydratePhotos();
 }
 
-async function viewGlaze(id) {
+// ---------------------------------------------------------------------------
+// Versionen einer Glasur: Das Original sind die Felder der Glasur selbst; jede Version (Revision)
+// hat ihr eigenes Rezept, Brennbereich, Litergewicht, Wassermenge, Fotos vom Test, Bewertung und
+// Notizen und verweist auf ihre Basis. So entsteht ein Baum: Original → Rev. 1 → Rev. 1.1 …
+// ---------------------------------------------------------------------------
+
+const ORIGINAL = 'original';
+const versionLabel = v => (v ? `Rev. ${v.nr.join('.')}` : 'Original');
+const versionVon = (g, vid) => (vid && vid !== ORIGINAL ? (g.versionen || []).find(v => v.id === vid) || null : null);
+const kinderVon = (g, vid) => (g.versionen || []).filter(v => (v.basis || ORIGINAL) === vid)
+  .sort((a, b) => a.nr.at(-1) - b.nr.at(-1));
+
+// alles, was eine Version ausmacht (Original: die Felder der Glasur)
+function versionDaten(g, vid) {
+  const v = versionVon(g, vid);
+  if (!v) {
+    return {
+      id: ORIGINAL, label: 'Original', basis: null, aenderung: '', bewertung: g.bewertung || '',
+      rezept: g.rezept || [], wasser: g.wasser, litergewicht: g.litergewicht, brennbereich: g.brennbereich,
+      beschreibung: g.beschreibung, notizen: g.notizen, datum: g.angesetzt, fotos: g.photo ? [g.photo] : [],
+    };
+  }
+  return {
+    id: v.id, label: versionLabel(v), basis: v.basis || ORIGINAL, aenderung: v.aenderung || '', bewertung: v.bewertung || '',
+    rezept: v.rezept || [], wasser: v.wasser, litergewicht: v.litergewicht, brennbereich: v.brennbereich,
+    beschreibung: v.beschreibung ?? g.beschreibung, notizen: v.notizen, datum: v.datum, fotos: v.fotos || [],
+  };
+}
+
+// Baum in Lesereihenfolge: [{ id, label, tiefe, d }]
+function versionsBaum(g) {
+  const liste = [];
+  const besuchen = (vid, tiefe) => {
+    liste.push({ id: vid, label: versionLabel(versionVon(g, vid)), tiefe, d: versionDaten(g, vid) });
+    for (const k of kinderVon(g, vid)) besuchen(k.id, tiefe + 1);
+  };
+  besuchen(ORIGINAL, 0);
+  return liste;
+}
+
+// Nummer einer neuen Version von basis: Rev. 1, Rev. 2 … bzw. Rev. 1.1, Rev. 1.2 …
+function neueNr(g, basis) {
+  const kinder = kinderVon(g, basis);
+  return [...(versionVon(g, basis)?.nr || []), Math.max(0, ...kinder.map(k => k.nr.at(-1))) + 1];
+}
+
+// zuletzt angesehene Version je Glasur (nur Bequemlichkeit auf diesem Gerät)
+const VERSION_KEY = id => `version:${id}`;
+function gemerkteVersion(id) { try { return localStorage.getItem(VERSION_KEY(id)) || ORIGINAL; } catch { return ORIGINAL; } }
+function versionMerken(id, vid) { try { localStorage.setItem(VERSION_KEY(id), vid); } catch { /* ohne Speicher */ } }
+
+// Bezeichnung einer Glasurschicht: „Seladon hell · Rev. 1“
+const lageName = l => [l.glazeName, l.versionLabel].filter(Boolean).join(' · ');
+
+// Rohstoffzeilen vergleichen (gleicher Name, Groß-/Kleinschreibung egal)
+const rohKey = s => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+function rezeptUnterschiede(rezept, basisRezept) {
+  const alt = new Map(basisRezept.map(r => [rohKey(r.rohstoff), r]));
+  const zeilen = rezept.map(r => {
+    const a = alt.get(rohKey(r.rohstoff));
+    alt.delete(rohKey(r.rohstoff));
+    if (!a) return { r, art: 'neu' };
+    const gleich = (isNum(r.anteil) && isNum(a.anteil)) ? Number(r.anteil) === Number(a.anteil) : String(r.anteil ?? '') === String(a.anteil ?? '');
+    return { r, art: gleich ? '' : 'geaendert', vorher: a.anteil };
+  });
+  return { zeilen, entfernt: [...alt.values()] };
+}
+
+// mit Bleistift gezeichneter Zweig für den Versions-Knopf
+const ICON_ZWEIG = `<svg class="bleistift" viewBox="0 0 24 24" aria-hidden="true">
+  <path d="M7.2 3.8C7 9.6 7.3 14.6 7.1 20.4"/><path d="M7.3 14.2C7.6 10.6 10.4 9.1 13.6 8.9C15.4 8.8 16.3 8.2 16.8 6.9"/>
+  <path d="M7.1 3.6C6 3.5 5.3 4.3 5.4 5.2S6.4 6.7 7.3 6.4M16.9 4.5C18 4.4 18.6 5.3 18.4 6.2S17.2 7.5 16.4 7.1M7 17.6C6 17.7 5.4 18.6 5.6 19.5S6.8 20.8 7.6 20.4" class="duenn"/>
+</svg>`;
+
+// Zettel mit allen Versionen: antippen wechselt, „+“ legt eine neue Version an.
+// Ergebnis: { wahl: vid } | { neu: basis } | null
+function versionenZettel(g, aktuell) {
+  return new Promise(resolve => {
+    const baum = versionsBaum(g);
+    const { dlg } = zettelDialog('Versionen', `
+      <h2>Versionen</h2>
+      <p class="hint">Antippen zum Wechseln. Jede Version hat ihr eigenes Rezept und eigene Fotos vom Test.</p>
+      <ul class="versionen-liste">
+        ${baum.map(n => `<li style="--tiefe:${n.tiefe}">
+          <button type="button" class="version-zeile" data-v="${n.id}" aria-current="${n.id === aktuell}">
+            ${thumb(n.d.fotos[0], { placeholder: '', cls: 'version-bild' })}
+            <span class="version-text">
+              <span class="version-name">${esc(n.label)}${n.d.bewertung && ERGEBNISSE[n.d.bewertung] ? ` <span class="badge ${ERGEBNISSE[n.d.bewertung].cls}">${ERGEBNISSE[n.d.bewertung].label}</span>` : ''}</span>
+              <span class="small muted">${esc([n.d.aenderung, fmtDate(n.d.datum)].filter(Boolean).join(' · ') || (n.id === ORIGINAL ? 'das erste Rezept' : ''))}</span>
+            </span>
+          </button></li>`).join('')}
+      </ul>
+      <div class="sheet-buttons">
+        <button type="button" class="btn primary" data-neu>${ICON_PLUS.replace('<svg', '<svg width="18" height="18"')} Neue Version von ${esc(versionLabel(versionVon(g, aktuell)))}</button>
+      </div>
+      <div class="sheet-buttons"><button type="button" class="btn" data-ende>Schließen</button></div>`, { massband: false, klasse: 'versionen-zettel' });
+    let res = null;
+    dlg.addEventListener('click', e => {
+      const b = e.target.closest('button');
+      if (b?.dataset.v) { res = { wahl: b.dataset.v }; dlg.close(); }
+      else if (b?.hasAttribute('data-neu')) { res = { neu: aktuell }; dlg.close(); }
+      else if (b?.hasAttribute('data-ende') || e.target.classList.contains('masse-buehne')) dlg.close();
+    });
+    dlg.addEventListener('close', () => { dlg.remove(); resolve(res); });
+    zettelZeigen(dlg);
+    hydratePhotos(dlg);
+  });
+}
+
+async function viewGlaze(id, params) {
   const g = await db.get('glazes', id);
   if (!g) return notFound();
-  setHeader({ title: g.name, back: '#/glasuren', actions: `<a class="icon-btn" href="#/glasuren/${id}/bearbeiten">Bearbeiten</a>` });
+  let vid = params?.get('v') || gemerkteVersion(id);
+  if (vid !== ORIGINAL && !versionVon(g, vid)) vid = ORIGINAL;
+  versionMerken(id, vid);
+  const d = versionDaten(g, vid);
+  const istOriginal = vid === ORIGINAL;
+  const anzahl = (g.versionen || []).length;
+  const bearbeiten = istOriginal ? `#/glasuren/${id}/bearbeiten` : `#/glasuren/${id}/version/${vid}/bearbeiten`;
+  setHeader({
+    title: g.name, back: '#/glasuren',
+    zusatz: `<button type="button" class="versions-knopf" id="versionen-knopf" aria-label="Version wechseln (jetzt ${esc(d.label)}${anzahl ? `, ${anzahl + 1} Versionen` : ''})">${ICON_ZWEIG}<span>${esc(d.label)}</span>${anzahl ? `<small>${anzahl + 1}</small>` : ''}</button>`,
+    actions: `<a class="icon-btn" href="${bearbeiten}">Bearbeiten</a>`,
+  });
 
-  // Alle Protokolle, in denen diese Glasur vorkommt – sortiert nach Tauchdauer
-  const uses = (await db.getAll('firings'))
-    .flatMap(f => (f.lagen || []).map((l, i) => ({ f, l, i })).filter(x => x.l.glazeId === id))
+  // Protokolle dieser Version (ohne Version vermerkt: Original) – sortiert nach Tauchdauer
+  const alleUses = (await db.getAll('firings'))
+    .flatMap(f => (f.lagen || []).map((l, i) => ({ f, l, i })).filter(x => x.l.glazeId === id));
+  const uses = alleUses.filter(x => (x.l.versionId || ORIGINAL) === vid)
     .sort((a, b) => (a.l.dauer ?? 1e9) - (b.l.dauer ?? 1e9) || (a.l.wdh ?? 0) - (b.l.wdh ?? 0));
-  const { basis: summe, zusatz: summeZusatz } = rezeptSumme((g.rezept || []).map(r => ({ a: r.rohstoff, b: r.anteil })));
+  const { basis: summe, zusatz: summeZusatz } = rezeptSumme(d.rezept.map(r => ({ a: r.rohstoff, b: r.anteil })));
 
   // Kleine Statistik: Ergebnis je Tauchdauer
   const groups = new Map();
@@ -2003,33 +2193,57 @@ async function viewGlaze(id) {
     groups.get(key)[f.ergebnis]++;
   }
 
+  // Änderungen gegenüber der Basis
+  const basis = d.basis ? versionDaten(g, d.basis) : null;
+  const diff = basis ? rezeptUnterschiede(d.rezept, basis.rezept) : { zeilen: d.rezept.map(r => ({ r, art: '' })), entfernt: [] };
+  const vorher = (k, text) => (basis && String(basis[k] ?? '') !== String(d[k] ?? '') ? `<span class="vorher">vorher ${text(basis[k])}</span>` : '');
+  const bewertung = ERGEBNISSE[d.bewertung];
+
+  // Vergleich: andere Versionen mit Foto
+  const mitFoto = versionsBaum(g).filter(n => n.id !== vid && n.d.fotos.length);
+  const vergleich = d.fotos.length && mitFoto.length
+    ? (mitFoto.find(n => n.id === d.basis) || mitFoto[0]) : null;
+
   $app.innerHTML = `
-    ${g.photo ? `<div class="gallery">${thumb(g.photo, { full: true, zoom: true })}</div>` : ''}
+    ${!istOriginal ? `<div class="version-kopf">
+        <p><strong>${esc(d.label)}</strong> – aus <a href="#/glasuren/${id}?v=${d.basis}">${esc(basis.label)}</a>${d.datum ? ` · ${fmtDate(d.datum)}` : ''}${bewertung ? ` <span class="badge ${bewertung.cls}">${bewertung.label}</span>` : ''}</p>
+        ${d.aenderung ? `<p class="version-aenderung">${esc(d.aenderung)}</p>` : ''}
+      </div>` : ''}
+    ${d.fotos.length ? `<div class="gallery">${d.fotos.map(f => thumb(f, { full: true, zoom: true })).join('')}</div>`
+      : !istOriginal ? '<p class="hint">Noch keine Fotos vom Test. Nach dem Brand unter „Bearbeiten“ Fotos der Testkachel hinzufügen – dann kannst du die Versionen vergleichen.</p>' : ''}
     <div class="card">
       <dl class="facts">
-        ${g.beschreibung ? `<dt>Beschreibung</dt><dd>${esc(g.beschreibung)}</dd>` : ''}
-        ${g.brennbereich ? `<dt>Brennbereich</dt><dd>${esc(g.brennbereich)}</dd>` : ''}
-        <dt>Litergewicht</dt><dd>${withUnit(g.litergewicht, 'g/l', 0)}</dd>
-        <dt>Wassermenge</dt><dd>${isNum(g.wasser) ? `${fmt(g.wasser, 0)} % vom Trockengewicht` : '–'}</dd>
-        ${g.angesetzt ? `<dt>Angesetzt am</dt><dd>${fmtDate(g.angesetzt)}</dd>` : ''}
+        ${d.beschreibung ? `<dt>Beschreibung</dt><dd>${esc(d.beschreibung)}</dd>` : ''}
+        ${d.brennbereich || basis?.brennbereich ? `<dt>Brennbereich</dt><dd>${esc(d.brennbereich || '–')}${vorher('brennbereich', v => esc(v || '–'))}</dd>` : ''}
+        <dt>Litergewicht</dt><dd>${withUnit(d.litergewicht, 'g/l', 0)}${vorher('litergewicht', v => withUnit(v, 'g/l', 0))}</dd>
+        <dt>Wassermenge</dt><dd>${isNum(d.wasser) ? `${fmt(d.wasser, 0)} % vom Trockengewicht` : '–'}${vorher('wasser', v => (isNum(v) ? `${fmt(v, 0)} %` : '–'))}</dd>
+        ${istOriginal && d.datum ? `<dt>Angesetzt am</dt><dd>${fmtDate(d.datum)}</dd>` : ''}
       </dl>
     </div>
 
-    ${g.rezept?.length || g.rezeptFoto ? `<div class="card"><h2>Rezept</h2>
-      ${g.rezept?.length ? `<table class="recipe-table">${g.rezept.map(r => `<tr><td>${esc(r.rohstoff)}</td><td>${isNum(r.anteil) ? fmt(r.anteil, 2) : esc(r.anteil)}</td></tr>`).join('')}
+    ${d.rezept.length || g.rezeptFoto ? `<div class="card"><h2>Rezept</h2>
+      ${basis && (diff.zeilen.some(z => z.art) || diff.entfernt.length) ? `<p class="hint">Markiert: geändert gegenüber ${esc(basis.label)}.</p>` : ''}
+      ${d.rezept.length || diff.entfernt.length ? `<table class="recipe-table">${diff.zeilen.map(({ r, art, vorher: v }) => `<tr class="${art}"><td>${esc(r.rohstoff)}${art === 'neu' ? ' <span class="aenderung-marke">neu</span>' : ''}</td><td>${art === 'geaendert' ? `<span class="vorher">${isNum(v) ? fmt(v, 2) : '–'} →</span> ` : ''}${isNum(r.anteil) ? fmt(r.anteil, 2) : esc(r.anteil)}</td></tr>`).join('')}
+      ${diff.entfernt.map(r => `<tr class="entfernt"><td>${esc(r.rohstoff)} <span class="aenderung-marke">entfernt</span></td><td>${isNum(r.anteil) ? fmt(r.anteil, 2) : ''}</td></tr>`).join('')}
       <tr class="sum"><td>${summeZusatz ? 'Summe ohne Zusätze' : 'Summe'}</td><td>${fmt(summe, 2)}</td></tr>
       ${summeZusatz ? `<tr class="sum zusatz"><td>Zusätze</td><td>${fmt(summeZusatz, 2)}</td></tr>
       <tr class="sum gesamt"><td>Gesamt mit Zusätzen</td><td>${fmt(summe + summeZusatz, 2)}</td></tr>` : ''}</table>` : ''}
-      ${g.rezeptFoto ? `<div class="rezept-foto">${thumb(g.rezeptFoto, { zoom: true })}<span class="small muted">Foto des Rezepts</span></div>` : ''}</div>` : ''}
+      ${istOriginal && g.rezeptFoto ? `<div class="rezept-foto">${thumb(g.rezeptFoto, { zoom: true })}<span class="small muted">Foto des Rezepts</span></div>` : ''}</div>` : ''}
+
+    ${vergleich ? `<div class="card" id="vergleich">
+      <h2>Vergleich</h2>
+      ${mitFoto.length > 1 ? `<div class="chips vergleich-wahl">${mitFoto.map(n => `<label class="chip"><input type="radio" name="vgl" value="${n.id}" ${n.id === vergleich.id ? 'checked' : ''}><span>${esc(n.label)}</span></label>`).join('')}</div>` : ''}
+      <div id="vergleich-bild"></div>
+    </div>` : ''}
 
     ${summe + summeZusatz > 0 ? `<div class="card charge" id="charge">
       <h2>Neue Charge ansetzen</h2>
-      <p class="hint">Wie viel Trockenglasur willst du abmischen? Die App rechnet aus, wie viel du von jedem Rohstoff abwiegst${isNum(g.wasser) ? ' und wie viel Wasser dazukommt' : ''}. Die Zusätze sind in der Menge enthalten.</p>
+      <p class="hint">Wie viel Trockenglasur willst du abmischen? Die App rechnet aus, wie viel du von jedem Rohstoff abwiegst${isNum(d.wasser) ? ' und wie viel Wasser dazukommt' : ''}. Die Zusätze sind in der Menge enthalten.</p>
       ${wertFeld('Trockenglasur', 'charge', chargeMenge(id), 'g', { titel: 'Neue Charge', start: 1000 })}
       <div id="charge-liste"></div>
     </div>` : ''}
 
-    ${g.notizen ? `<div class="card"><h2>Notizen</h2><p class="notes">${esc(g.notizen)}</p></div>` : ''}
+    ${d.notizen ? `<div class="card"><h2>${istOriginal ? 'Notizen' : 'Notizen und Ergebnis'}</h2><p class="notes">${esc(d.notizen)}</p></div>` : ''}
 
     <h3 class="section-title">Auswertung: Tauchdauer → Ergebnis</h3>
     ${groups.size ? `<div class="card"><table class="measure">
@@ -2037,7 +2251,7 @@ async function viewGlaze(id) {
       <tbody>${[...groups].map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v.gut || ''}</td><td>${v.ok || ''}</td><td>${v.schlecht || ''}</td></tr>`).join('')}</tbody>
     </table></div>` : ''}
     ${uses.length ? `<div class="card">
-      <p class="small muted" style="margin-top:0">Alle Stücke mit dieser Glasur, sortiert nach Tauchdauer. Links vorher, rechts nachher.</p>
+      <p class="small muted" style="margin-top:0">Alle Stücke mit ${anzahl ? `dieser Version (${esc(d.label)})` : 'dieser Glasur'}, sortiert nach Tauchdauer. Links vorher, rechts nachher.</p>
       ${uses.map(({ f, l }) => `<a class="eval-row" href="#/glasieren/${f.id}">
         ${thumb(f.beforePhoto, { placeholder: 'vorher' })}${thumb(f.afterPhoto, { placeholder: 'nachher' })}
         <span>
@@ -2046,36 +2260,172 @@ async function viewGlaze(id) {
           <span class="badges">${firingStatus(f)}${[...(f.vorher || []), ...(f.nachher || [])].slice(0, 3).map(v => `<span class="badge">${esc(v)}</span>`).join('')}</span>
         </span>
       </a>`).join('')}
-    </div>` : '<p class="muted small">Noch keine Glasurprotokolle mit dieser Glasur.</p>'}
+    </div>` : `<p class="muted small">Noch keine Glasurprotokolle mit ${anzahl ? 'dieser Version' : 'dieser Glasur'}.</p>`}
 
     <div class="btn-row">
-      <a class="btn primary" href="#/glasieren/neu?glasur=${id}">Mit dieser Glasur glasieren</a>
+      <a class="btn primary" href="#/glasieren/neu?glasur=${id}${istOriginal ? '' : `&version=${vid}`}">Mit ${anzahl ? 'dieser Version' : 'dieser Glasur'} glasieren</a>
+      <a class="btn" href="#/glasuren/${id}/version/neu?von=${vid}">${ICON_ZWEIG.replace('<svg', '<svg width="22" height="22"')} Neue Version davon</a>
     </div>
-    <div class="btn-row"><button class="btn danger" id="del">Glasur löschen</button></div>`;
+    <div class="btn-row">${istOriginal
+      ? '<button class="btn danger" id="del">Glasur löschen</button>'
+      : `<button class="btn danger" id="del-version">${esc(d.label)} löschen</button>`}</div>`;
 
   hydratePhotos();
+  document.getElementById('versionen-knopf').onclick = async () => {
+    const res = await versionenZettel(g, vid);
+    if (res?.wahl && res.wahl !== vid) go(`#/glasuren/${id}?v=${res.wahl}`, true);
+    else if (res?.neu) go(`#/glasuren/${id}/version/neu?von=${res.neu}`);
+  };
+
+  const vgl = $app.querySelector('#vergleich');
+  if (vgl) {
+    const zeigen = andere => {
+      const n = mitFoto.find(x => x.id === andere);
+      mountCompare(vgl.querySelector('#vergleich-bild'), n.d.fotos[0], d.fotos[0], [n.label, d.label]);
+    };
+    vgl.addEventListener('change', e => { if (e.target.name === 'vgl') zeigen(e.target.value); });
+    zeigen(vergleich.id);
+  }
+
   const charge = $app.querySelector('#charge');
   if (charge) {
     const zeigen = () => {
       const v = charge.querySelector('[name="charge"]').value;
       const menge = isNum(v) ? Number(v) : null;
       chargeMerken(id, menge);
-      charge.querySelector('#charge-liste').innerHTML = chargeTabelle(g, menge);
+      charge.querySelector('#charge-liste').innerHTML = chargeTabelle({ ...d, bearbeiten }, menge);
     };
     charge.addEventListener('change', zeigen);
     zeigen();
   }
-  $app.querySelector('#del').onclick = async () => {
-    if (!confirm(`Glasur „${g.name}“ löschen? Protokolle behalten den Namen der Glasur.`)) return;
-    for (const f of new Set(uses.map(u => u.f))) {
-      f.lagen.forEach(l => { if (l.glazeId === id) l.glazeId = null; });
+
+  $app.querySelector('#del')?.addEventListener('click', async () => {
+    if (!confirm(`Glasur „${g.name}“ mit allen Versionen löschen? Protokolle behalten den Namen der Glasur.`)) return;
+    for (const f of new Set(alleUses.map(u => u.f))) {
+      f.lagen.forEach(l => { if (l.glazeId === id) { l.glazeId = null; l.versionId = null; } });
       await db.put('firings', f);
     }
     await deletePhoto(g.photo);
     await deletePhoto(g.rezeptFoto);
+    for (const v of g.versionen || []) for (const f of v.fotos || []) await deletePhoto(f);
     await db.del('glazes', id);
+    try { localStorage.removeItem(VERSION_KEY(id)); } catch { /* ohne Speicher */ }
     toast('Gelöscht');
     go('#/glasuren', true);
+  });
+  $app.querySelector('#del-version')?.addEventListener('click', async () => {
+    if (kinderVon(g, vid).length) {
+      toast(`Erst die Versionen löschen, die aus ${d.label} entstanden sind.`);
+      return;
+    }
+    if (!confirm(`${d.label} von „${g.name}“ löschen?`)) return;
+    for (const f of new Set(uses.map(u => u.f))) {
+      f.lagen.forEach(l => { if (l.glazeId === id && l.versionId === vid) l.versionId = null; });
+      await db.put('firings', f);
+    }
+    for (const f of d.fotos) await deletePhoto(f);
+    g.versionen = g.versionen.filter(v => v.id !== vid);
+    g.updatedAt = new Date().toISOString();
+    await db.put('glazes', g);
+    toast('Version gelöscht');
+    go(`#/glasuren/${id}?v=${d.basis}`, true);
+  });
+}
+
+// Neue Version (von: Basis) oder eine Version bearbeiten
+async function viewVersionForm(id, vid, von) {
+  const g = await db.get('glazes', id);
+  if (!g) return notFound();
+  const alt = vid ? versionVon(g, vid) : null;
+  if (vid && !alt) return notFound();
+  const basisId = alt ? alt.basis || ORIGINAL : (von && (von === ORIGINAL || versionVon(g, von)) ? von : ORIGINAL);
+  const basis = versionDaten(g, basisId);
+  // neue Version: Rezept und Werte der Basis als Vorlage
+  const v = alt || {
+    rezept: structuredClone(basis.rezept), wasser: basis.wasser, litergewicht: basis.litergewicht,
+    brennbereich: basis.brennbereich, datum: today(), fotos: [],
+  };
+  const nr = alt ? alt.nr : neueNr(g, basisId);
+  const label = versionLabel({ nr });
+  const fotos = [...(v.fotos || [])];
+  const rezept = (v.rezept || []).map(r => ({ a: r.rohstoff, b: r.anteil ?? '' }));
+  if (!rezept.length) rezept.push({ a: '', b: '' });
+  const session = photoSession();
+
+  setHeader({ title: alt ? `${label} bearbeiten` : `Neue Version: ${label}`, back: `#/glasuren/${id}?v=${vid || basisId}` });
+  $app.innerHTML = `<form id="f" novalidate>
+    <p class="hint version-hinweis">${esc(g.name)} · ${esc(label)} aus ${esc(basis.label)}. ${alt ? '' : `Rezept und Werte von ${esc(basis.label)} sind schon eingetragen – ändere, was du ausprobieren willst.`}</p>
+    <div class="card">
+      ${field('Was hast du geändert?', 'aenderung', v.aenderung, { placeholder: 'z. B. 5 % mehr Quarz, weniger Kreide' })}
+    </div>
+    <div class="card">
+      <h2>Rezept</h2>
+      <div id="rezept"></div>
+      <p class="small muted" id="summe" style="margin:12px 0 14px"></p>
+    </div>
+    <div class="card">
+      <div class="fields-2">
+        ${field('Brennbereich', 'brennbereich', v.brennbereich, { placeholder: 'z. B. 1220–1250 °C' })}
+        ${wertFeld('Litergewicht', 'litergewicht', v.litergewicht, 'gl')}
+      </div>
+      <div class="fields-2">
+        ${wertFeld('Wassermenge', 'wasser', v.wasser, 'prozent', { start: 80 })}
+        ${field('Angesetzt am', 'angesetzt', v.datum, { type: 'date' })}
+      </div>
+    </div>
+    <div class="card">
+      <h2>Nach dem Test</h2>
+      <p class="hint">Fotos der Testkachel nach dem Brand – das erste Foto wird mit den anderen Versionen verglichen.</p>
+      <div id="fotos"></div>
+      <div class="segmented" role="radiogroup" aria-label="Bewertung">
+        ${Object.entries(ERGEBNISSE).map(([k, e]) => `<label><input type="radio" name="bewertung" value="${k}" ${v.bewertung === k ? 'checked' : ''}><span class="${e.cls}">${e.label}</span></label>`).join('')}
+        <label><input type="radio" name="bewertung" value="" ${!v.bewertung ? 'checked' : ''}><span class="none">Noch offen</span></label>
+      </div>
+      ${textarea('Notizen und Ergebnis', 'notizen', v.notizen, 'Wie ist sie geworden? Was würdest du als Nächstes ändern?')}
+    </div>
+    <div class="sticky-save">
+      <button type="button" class="btn" id="cancel">Abbrechen</button>
+      <button type="submit" class="btn primary">Speichern</button>
+    </div>
+  </form>`;
+
+  const summeEl = $app.querySelector('#summe');
+  mountRepeat($app.querySelector('#rezept'), rezept, {
+    labelA: 'Rohstoff', labelB: 'Anteil', skalaB: 'anteil', addLabel: 'Rohstoff hinzufügen',
+    onChange: () => { summeEl.innerHTML = summeText(rezept); },
+  });
+  mountFotos($app.querySelector('#fotos'), fotos, session, 'Testkachel');
+
+  const form = $app.querySelector('#f');
+  $app.querySelector('#cancel').onclick = () => $back.click();
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const now = new Date().toISOString();
+    const neu = {
+      ...(alt || {}),
+      id: alt?.id || db.newId(),
+      nr,
+      basis: basisId,
+      aenderung: strVal(form, 'aenderung'),
+      rezept: rezeptAusZeilen(rezept),
+      brennbereich: strVal(form, 'brennbereich'),
+      litergewicht: numVal(form, 'litergewicht'),
+      wasser: numVal(form, 'wasser'),
+      datum: strVal(form, 'angesetzt'),
+      fotos,
+      bewertung: form.querySelector('[name="bewertung"]:checked')?.value || '',
+      notizen: strVal(form, 'notizen'),
+      createdAt: alt?.createdAt || now,
+      updatedAt: now,
+    };
+    g.versionen = alt ? g.versionen.map(x => (x.id === alt.id ? neu : x)) : [...(g.versionen || []), neu];
+    g.updatedAt = now;
+    await db.put('glazes', g);
+    // Bezeichnung in Protokollen aktuell halten (die Nummer ändert sich nicht, aber sicher ist sicher)
+    await session.commit();
+    versionMerken(id, neu.id);
+    toast('Gespeichert');
+    finish(`#/glasuren/${id}?v=${neu.id}`, !!alt);
   };
 }
 
@@ -2128,12 +2478,7 @@ async function viewGlazeForm(id) {
   const summeEl = $app.querySelector('#summe');
   const rezeptListe = mountRepeat($app.querySelector('#rezept'), rezept, {
     labelA: 'Rohstoff', labelB: 'Anteil', skalaB: 'anteil', addLabel: 'Rohstoff hinzufügen',
-    onChange: () => {
-      const { basis, zusatz } = rezeptSumme(rezept);
-      summeEl.innerHTML = !basis && !zusatz ? '' : zusatz
-        ? `Summe ohne Zusätze: ${fmt(basis, 2)}<br>Zusätze: ${fmt(zusatz, 2)}<br><strong>Gesamt mit Zusätzen: ${fmt(basis + zusatz, 2)}</strong>`
-        : `Summe: ${fmt(basis, 2)}`;
-    },
+    onChange: () => { summeEl.innerHTML = summeText(rezept); },
   });
   mountSinglePhoto($app.querySelector('#photo'), state, 'photo', session, 'Testkachel');
 
@@ -2185,10 +2530,7 @@ async function viewGlazeForm(id) {
       litergewicht: numVal(form, 'litergewicht'),
       wasser: numVal(form, 'wasser'),
       angesetzt: strVal(form, 'angesetzt'),
-      rezept: rezept.filter(r => String(r.a).trim()).map(r => {
-        const v = String(r.b).trim().replace(',', '.');
-        return { rohstoff: String(r.a).trim(), anteil: isNum(v) ? Number(v) : null };
-      }),
+      rezept: rezeptAusZeilen(rezept),
       notizen: strVal(form, 'notizen'),
       photo: state.photo,
       rezeptFoto: state.rezeptFoto,
@@ -2350,7 +2692,9 @@ const ROUTES = [
   [/^\/glasieren\/([\w-]+)\/bearbeiten$/, (m, q) => viewFiringForm(m[1], q), 'glasieren'],
   [/^\/glasuren$/, viewGlazes, 'glasuren'],
   [/^\/glasuren\/neu$/, () => viewGlazeForm(null), 'glasuren'],
-  [/^\/glasuren\/([\w-]+)$/, m => viewGlaze(m[1]), 'glasuren'],
+  [/^\/glasuren\/([\w-]+)$/, (m, q) => viewGlaze(m[1], q), 'glasuren'],
+  [/^\/glasuren\/([\w-]+)\/version\/neu$/, (m, q) => viewVersionForm(m[1], null, q.get('von')), 'glasuren'],
+  [/^\/glasuren\/([\w-]+)\/version\/([\w-]+)\/bearbeiten$/, m => viewVersionForm(m[1], m[2]), 'glasuren'],
   [/^\/glasuren\/([\w-]+)\/bearbeiten$/, m => viewGlazeForm(m[1]), 'glasuren'],
   [/^\/mehr$/, viewMore, 'mehr'],
 ];

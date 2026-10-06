@@ -304,6 +304,24 @@ function brennbereichLesen(text) {
 const BRENN_LABEL = /^(brand|glasurbrand|brenntemperatur|brennbereich|brenntemp\.?|temperatur|temp\.?|brennen|firing|fire|atmosph(ä|ae)re)\b\s*:?\s*/i;
 const LITER_LABEL = /(?:liter\s*-?\s*gewicht|litergew\.?|spez(?:\.|ifisches)?\s*gew(?:\.|icht)?|dichte|specific\s+gravity|\bs\.?\s?g\.?)\s*[:=]?\s*(?:ca\.?|~|≈)?\s*(?<zahl>[0-9OoIl][0-9OoIl.,]*)/i;
 
+// Wassermenge: in Prozent vom Trockengewicht („Wasser 80 %“, „Wassermenge: 75-85 %“, „water 90%“);
+// in ml oder g wird sie später auf das Rezept umgerechnet
+const WASSER = /\b(wasser(menge|zugabe|anteil)?|water)\b\s*[:=]?\s*(?:ca\.?|~|≈)?\s*(?<a>[0-9OoIl][0-9OoIl.,]*)(?:\s*(?:-|–|bis|to)\s*(?<b>\d[\d.,]*))?\s*(?<e>%|ml|g\b|l\b)?/i;
+function wasserLesen(zeile) {
+  const m = zeile.text.match(WASSER);
+  if (!m) return null;
+  const a = zahlLesen(m.groups.a), b = m.groups.b ? zahlLesen(m.groups.b) : null;
+  if (!a) return { wert: null };
+  const wort = zeile.woerter.find(w => w.text.includes(m.groups.a) || m.groups.a.includes(w.text));
+  return {
+    wert: b ? runden((a.zahl + b.zahl) / 2, 0) : a.zahl,
+    bereich: b ? `${komma(a.zahl)}–${komma(b.zahl)}` : '',
+    einheit: (m.groups.e || '%').toLowerCase(),
+    korrigiert: a.korrigiert,
+    conf: wort?.conf ?? zeile.conf,
+  };
+}
+
 function litergewichtLesen(zeile) {
   const t = zeile.text;
   let m = t.match(LITER_LABEL);
@@ -340,6 +358,7 @@ export function rezeptAuswerten(zeilen) {
     beschreibung: { wert: '', sicher: true, zeilen: [] },
     brennbereich: { wert: '', sicher: true, zeilen: [] },
     litergewicht: { wert: null, sicher: true, zeilen: [] },
+    wasser: { wert: null, sicher: true, zeilen: [] },
     rezept: [],
     notizen: [],
     summe: null,
@@ -366,6 +385,18 @@ export function rezeptAuswerten(zeilen) {
       art[i] = 'litergewicht';
       const grund = lg.wert == null ? 'Zahl nicht lesbar' : lg.grenzwertig ? 'ungewöhnlicher Wert' : lg.korrigiert ? `Zahl war unklar („${z.text}“)` : lg.conf < UNSICHER_ZAHL ? 'schlecht lesbar' : '';
       Object.assign(erg.litergewicht, { wert: lg.wert, sicher: !grund, grund, zeilen: [i] });
+      return;
+    }
+    const wa = wasserLesen(z);
+    if (wa) {
+      art[i] = 'wasser';
+      Object.assign(erg.wasser, { wert: wa.wert, einheit: wa.einheit, zeilen: [i] });
+      erg.wasser.grund = wa.wert == null ? 'Zahl nicht lesbar'
+        : wa.bereich ? `als Bereich angegeben (${wa.bereich} %) – Mitte genommen`
+        : wa.korrigiert ? `Zahl war unklar („${z.text}“)`
+        : wa.conf < UNSICHER_ZAHL ? 'schlecht lesbar'
+        : wa.einheit === '%' && (wa.wert < 20 || wa.wert > 200) ? 'ungewöhnlicher Wert' : '';
+      erg.wasser.sicher = !erg.wasser.grund;
       return;
     }
     const bb = brennbereichLesen(text);
@@ -476,6 +507,16 @@ export function rezeptAuswerten(zeilen) {
     delete p.nameGrund;
     delete p.mengeGrund;
   }
+  // Wasser in ml/g: auf das Rezept beziehen (Prozent vom Trockengewicht)
+  if (erg.wasser.wert != null && erg.wasser.einheit !== '%') {
+    const ml = erg.wasser.einheit === 'l' ? erg.wasser.wert * 1000 : erg.wasser.wert;
+    const trocken = sBasis + sZ;
+    if (trocken > 0) {
+      erg.wasser.wert = Math.round((ml / trocken) * 100);
+      Object.assign(erg.wasser, { sicher: false, grund: `${komma(ml)} ml Wasser auf ${komma(trocken)} g Trockenglasur umgerechnet – stimmt das?` });
+    } else Object.assign(erg.wasser, { wert: null, sicher: false, grund: 'Wasser in ml angegeben – bitte in % vom Trockengewicht eintragen' });
+  }
+  delete erg.wasser.einheit;
   if (basis.length) {
     erg.summe = { basis: sBasis, zusatz: sZ, prozent, sicher: true, grund: '' };
     // Geht die Summe nicht auf und ist keine Zahl als unsicher markiert: als eigene Frage
@@ -538,7 +579,7 @@ export function rezeptAuswerten(zeilen) {
 // Fragen, die vor dem Übernehmen beantwortet werden müssen
 export function offeneFragen(erg) {
   const f = [];
-  for (const k of ['name', 'beschreibung', 'brennbereich', 'litergewicht']) if (!erg[k].sicher) f.push(k);
+  for (const k of ['name', 'beschreibung', 'brennbereich', 'litergewicht', 'wasser']) if (!erg[k].sicher) f.push(k);
   erg.rezept.forEach((p, i) => { if (!p.sicher) f.push(`rezept.${i}`); });
   if (erg.summe && !erg.summe.sicher) f.push('summe');
   erg.notizen.forEach((n, i) => { if (!n.sicher) f.push(`notiz.${i}`); });

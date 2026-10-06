@@ -101,7 +101,8 @@ async function lesen(name, bild, { neu = true } = {}) {
     return {
       titel: d.querySelector('h2').textContent,
       name: wert('name'), beschreibung: wert('beschreibung'), brennbereich: wert('brennbereich'),
-      liter: d.querySelector('[data-liter]')?.textContent.trim() ?? null,
+      liter: d.querySelector('[data-zahl="litergewicht"]')?.textContent.trim() ?? null,
+      wasser: d.querySelector('[data-zahl="wasser"]')?.textContent.trim() ?? null,
       rezept: [...d.querySelectorAll('.rf-rezept [data-i]')].map(z => ({
         roh: z.querySelector('[data-roh]').value,
         anteil: z.querySelector('[data-anteil]').textContent.trim(),
@@ -114,7 +115,7 @@ async function lesen(name, bild, { neu = true } = {}) {
       knopf: d.querySelector('[data-ende="ok"]')?.textContent || null,
     };
   });
-  console.log(`  (${dauer} ms) ${zettel.titel}: ${zettel.name} | ${zettel.beschreibung} | ${zettel.brennbereich} | ${zettel.liter}`);
+  console.log(`  (${dauer} ms) ${zettel.titel}: ${zettel.name} | ${zettel.beschreibung} | ${zettel.brennbereich} | ${zettel.liter} | Wasser ${zettel.wasser}`);
   for (const r of zettel.rezept) console.log(`    ${r.zusatz ? '+' : ' '} ${r.roh} = ${r.anteil}${r.offen ? `  ? ${r.grund}` : ''}`);
   for (const n of zettel.notizen) console.log(`    Notiz: ${n}`);
   for (const o of zettel.offen) console.log(`    offen → ${o}`);
@@ -143,7 +144,8 @@ const gedruckt = {
     { t: 'Zusätze:', y: 760 },
     { t: 'Eisenoxid rot', x: 120, y: 820 }, { t: '1,5', x: 700, y: 820 },
     { t: 'Litergewicht 1450 g/l', y: 920 },
-    { t: 'Gut sieben (80er Sieb), 24 h quellen lassen.', y: 1000, gr: 30 },
+    { t: 'Wasser: 80 %', y: 960 },
+    { t: 'Gut sieben (80er Sieb), 24 h quellen lassen.', y: 1040, gr: 30 },
   ],
 };
 
@@ -155,6 +157,8 @@ try {
   pruefe(/glänzend/.test(z.beschreibung), 'Beschreibung');
   pruefe(/Kegel 6/.test(z.brennbereich) && /1240 °C/.test(z.brennbereich), 'Brennbereich');
   pruefe(/1450/.test(z.liter), 'Litergewicht');
+  pruefe(/^80 %/.test(z.wasser || ''), 'Wassermenge');
+  pruefe(!z.rezept.some(r => /wasser/i.test(r.roh)), 'Wasser ist kein Rohstoff');
   pruefe(z.rezept.length === 6, 'sechs Rohstoffe');
   pruefe(ROH.every(([a, b], i) => z.rezept[i]?.roh === a && z.rezept[i]?.anteil.replace(/,0$/, '') === b && !z.rezept[i].zusatz), 'Rohstoffe und Anteile in der richtigen Zeile');
   pruefe(z.rezept[5]?.roh === 'Eisenoxid rot' && z.rezept[5]?.zusatz && /^1,5/.test(z.rezept[5].anteil), 'Zusatz Eisenoxid rot 1,5');
@@ -166,16 +170,16 @@ try {
   const form = await page.evaluate(() => {
     const f = document.querySelector('#f');
     return {
-      name: f.elements.name.value, brenn: f.elements.brennbereich.value, liter: f.elements.litergewicht.value,
+      name: f.elements.name.value, brenn: f.elements.brennbereich.value, liter: f.elements.litergewicht.value, wasser: f.elements.wasser.value,
       zeilen: [...document.querySelectorAll('#rezept .repeat-row')].map(r => `${r.querySelector('input').value}=${r.querySelector('.repeat-wert').textContent.trim()}`),
       summe: document.querySelector('#summe').textContent, notizen: f.elements.notizen.value,
       foto: !!document.querySelector('#rezept-foto .pp-item img'),
     };
   });
   console.log('  Formular:', JSON.stringify(form));
-  pruefe(form.name === 'Seladon hell' && form.liter === '1450', 'Name und Litergewicht im Formular');
+  pruefe(form.name === 'Seladon hell' && form.liter === '1450' && form.wasser === '80', 'Name, Litergewicht und Wassermenge im Formular');
   pruefe(form.zeilen.length === 6 && form.zeilen[5].startsWith('+ Eisenoxid rot'), 'Rezept im Formular (Zusatz mit +)');
-  pruefe(/Summe: 100 \(dazu 1,5 Zusätze\)/.test(form.summe), 'Summe ohne Zusätze');
+  pruefe(/Summe ohne Zusätze: 100/.test(form.summe) && /Gesamt mit Zusätzen: 101,5/.test(form.summe), 'Summe und Gesamtsumme mit Zusätzen im Formular');
   pruefe(form.foto, 'Foto des Rezepts im Formular');
   await page.screenshot({ path: join(ausgabe, 'rezept-formular.png'), fullPage: true });
   await page.click('button[type="submit"]');
@@ -183,7 +187,30 @@ try {
   await page.waitForTimeout(300);
   await page.screenshot({ path: join(ausgabe, 'rezept-ansicht.png'), fullPage: true });
   pruefe(await page.locator('.rezept-foto img').count() === 1, 'Foto des Rezepts in der Ansicht');
-  pruefe(/Summe ohne Zusätze/.test(await page.locator('.recipe-table tr.sum').textContent()), 'Summenzeile in der Ansicht');
+  pruefe(/Summe ohne Zusätze/.test(await page.locator('.recipe-table tr.sum').first().textContent()), 'Summenzeile in der Ansicht');
+  pruefe(/Gesamt mit Zusätzen\s*101,5/.test(await page.locator('.recipe-table tr.gesamt').textContent()), 'Gesamtsumme in der Ansicht');
+
+  // ---------- Neue Charge ----------
+  const charge = async () => page.$$eval('.charge-tabelle tr', rs => rs.map(r => [...r.cells].map(td => td.textContent.trim()).join(' ')));
+  let c = await charge();
+  console.log('  Charge:', JSON.stringify(c));
+  pruefe(c[0] === 'Kalifeldspat 246 g' && c[5] === '+ Eisenoxid rot 14,8 g', 'Charge 1000 g: Anteile mit Zusätzen auf 1000 g verteilt');
+  pruefe(c.includes('Trockenglasur gesamt 1.000 g') && c.includes('Wasser (80 %) 800 ml'), 'Charge 1000 g: 800 ml Wasser');
+  await page.click('[data-wert="charge"]');
+  await page.waitForSelector('dialog.masse[open] .massband.offen');
+  for (let i = 0; i < 5; i++) await page.keyboard.press('Shift+ArrowRight');
+  await page.click('dialog.masse [data-ende="ok"]');
+  await page.waitForSelector('dialog.masse', { state: 'detached' });
+  c = await charge();
+  console.log('  Charge neu:', JSON.stringify(c));
+  const menge = Number(c.find(t => t.startsWith('Trockenglasur')).replace(/\D/g, ''));
+  const wasser = Number(c.find(t => t.startsWith('Wasser')).split(') ')[1].replace(/\D/g, ''));
+  pruefe(menge !== 1000 && wasser === Math.round(menge * 0.8), `Charge geändert: ${menge} g → ${wasser} ml Wasser`);
+  await page.locator('#charge').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: join(ausgabe, 'rezept-charge.png') });
+  await page.reload();
+  await page.waitForSelector('.charge-tabelle');
+  pruefe((await charge()).includes(`Trockenglasur gesamt ${menge.toLocaleString('de-DE')} g`), 'Chargengröße wird gemerkt');
 
   // ---------- 2. Bearbeiten: Formular hat schon Werte → Nachfrage ----------
   console.log('2. Vorhandene Glasur bearbeiten');

@@ -27,6 +27,7 @@ export const SKALEN = {
   grad: { einheit: '°C', schritt: 1, gross: 10, mittel: 5, px: 8, min: 500, max: 1400, start: 1240, schnell: 20 },
   min: { einheit: 'min', schritt: 1, gross: 5, px: 14, min: 0, max: 600, start: 10 },
   anteil: { einheit: '', schritt: 0.1, gross: 10, mittel: 5, px: 8, min: 0, max: 1000, start: 10, schnell: 20 },
+  prozent: { einheit: '%', schritt: 1, gross: 10, mittel: 5, px: 8, min: 1, max: 300, start: 80, schnell: 20 },
 };
 
 const skalaVon = s => (typeof s === 'string' ? SKALEN[s] : s) || SKALEN.cm;

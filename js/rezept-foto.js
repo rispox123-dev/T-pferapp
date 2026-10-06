@@ -216,8 +216,8 @@ const frageTeil = (offen, grund, bild) => (offen ? `
 const leer = v => v == null || String(v).trim() === '';
 
 // erg: aus rezeptAuswerten; aktuell: was schon im Formular steht
-// { name, beschreibung, brennbereich, litergewicht, rezept: [{ rohstoff, anteil }] }.
-// Ergebnis: { name, beschreibung, brennbereich, litergewicht, rezept, rezeptModus, notizen } oder null
+// { name, beschreibung, brennbereich, litergewicht, wasser, rezept: [{ rohstoff, anteil }] }.
+// Ergebnis: { name, beschreibung, brennbereich, litergewicht, wasser, rezept, rezeptModus, notizen } oder null
 function pruefen(erg, zeilen, bild, aktuell) {
   return new Promise(resolve => {
     const st = {
@@ -225,6 +225,7 @@ function pruefen(erg, zeilen, bild, aktuell) {
       beschreibung: erg.beschreibung.wert,
       brennbereich: erg.brennbereich.wert,
       litergewicht: erg.litergewicht.wert,
+      wasser: erg.wasser.wert,
       rezept: erg.rezept.map(p => ({ ...p })),
       notizen: erg.notizen.map(n => ({ ...n })),
       rezeptModus: aktuell.rezept.length ? null : 'ersetzen',
@@ -252,16 +253,20 @@ function pruefen(erg, zeilen, bild, aktuell) {
         ${alt != null ? `<button type="button" class="btn small rf-behalten" data-behalten="${k}">„${esc(alt)}“ behalten</button>` : ''}
       </div>`;
     };
-    const literHtml = () => {
-      const e = erg.litergewicht;
-      const alt = !leer(aktuell.litergewicht) && st.litergewicht != null && Number(aktuell.litergewicht) !== st.litergewicht ? aktuell.litergewicht : null;
-      if (!e.sicher || alt != null) offen.add('litergewicht');
-      if (st.litergewicht == null && e.sicher) return '';
-      const grund = [!e.sicher ? e.grund : '', alt != null ? `Im Formular steht schon ${wertText(alt, 'gl')}.` : ''].filter(Boolean).join(' ');
-      return `<div class="rf-feld ${offen.has('litergewicht') ? 'rf-offen' : ''}" data-frage="litergewicht">
-        <div class="field"><span>Litergewicht</span><button type="button" class="wert-knopf" data-liter>${st.litergewicht != null ? esc(wertText(st.litergewicht, 'gl')) : '<span class="wert-leer">–</span>'}</button></div>
-        ${frageTeil(offen.has('litergewicht'), grund, !e.sicher ? schnipsel(bild, zeilen, e.zeilen) : '')}
-        ${alt != null ? `<button type="button" class="btn small rf-behalten" data-behalten="litergewicht">${esc(wertText(alt, 'gl'))} behalten</button>` : ''}
+    // Zahlen (mit dem Maßband): Litergewicht, Wassermenge
+    const ZAHLEN = { litergewicht: ['Litergewicht', 'gl'], wasser: ['Wassermenge (vom Trockengewicht)', 'prozent'] };
+    const zahlAnzeige = k => (st[k] != null ? esc(wertText(st[k], ZAHLEN[k][1])) : '<span class="wert-leer">–</span>');
+    const zahlHtml = k => {
+      const e = erg[k];
+      const [label, skala] = ZAHLEN[k];
+      const alt = !leer(aktuell[k]) && st[k] != null && Number(aktuell[k]) !== st[k] ? aktuell[k] : null;
+      if (!e.sicher || alt != null) offen.add(k);
+      if (st[k] == null && e.sicher) return '';
+      const grund = [!e.sicher ? e.grund : '', alt != null ? `Im Formular steht schon ${wertText(alt, skala)}.` : ''].filter(Boolean).join(' ');
+      return `<div class="rf-feld ${offen.has(k) ? 'rf-offen' : ''}" data-frage="${k}">
+        <div class="field"><span>${label}</span><button type="button" class="wert-knopf" data-zahl="${k}">${zahlAnzeige(k)}</button></div>
+        ${frageTeil(offen.has(k), grund, !e.sicher ? schnipsel(bild, zeilen, e.zeilen) : '')}
+        ${alt != null ? `<button type="button" class="btn small rf-behalten" data-behalten="${k}">${esc(wertText(alt, skala))} behalten</button>` : ''}
       </div>`;
     };
     const zeileHtml = (p, i) => {
@@ -290,14 +295,14 @@ function pruefen(erg, zeilen, bild, aktuell) {
       </li>`;
     };
 
-    const gefunden = erg.rezept.length || st.name || st.brennbereich || st.litergewicht != null;
+    const gefunden = erg.rezept.length || st.name || st.brennbereich || st.litergewicht != null || st.wasser != null;
     if (aktuell.rezept.length && erg.rezept.length) offen.add('modus');
     if (erg.summe && !erg.summe.sicher) offen.add('summe');
 
     const inhalt = gefunden ? `
       <h2>Vom Foto gelesen</h2>
       <p class="hint rf-kopf"></p>
-      <div class="rf-teil">${textFelder.map(feldHtml).join('')}${literHtml()}</div>
+      <div class="rf-teil">${textFelder.map(feldHtml).join('')}${zahlHtml('litergewicht')}${zahlHtml('wasser')}</div>
       ${erg.rezept.length ? `<h3 class="rf-titel">Rezept</h3>
         ${aktuell.rezept.length ? `<div class="rf-feld rf-offen" data-frage="modus">
           <p class="rf-grund">Im Formular steht schon ein Rezept (${aktuell.rezept.length} Rohstoff${aktuell.rezept.length > 1 ? 'e' : ''}).</p>
@@ -309,7 +314,7 @@ function pruefen(erg, zeilen, bild, aktuell) {
         <div class="rf-feld" data-frage="summe"><p class="rf-summe small"></p>
           <div class="rf-frage-info rf-summe-frage" hidden><p class="rf-grund"></p>
             <button type="button" class="rf-stimmt" data-stimmt aria-label="Stimmt so">${HAKEN}<span>Stimmt so</span></button></div></div>
-        <p class="hint small">Das <strong>+</strong> vor einem Rohstoff macht ihn zum Zusatz (z. B. Färbeoxide); Zusätze zählen nicht zur Summe.</p>` : ''}
+        <p class="hint small">Das <strong>+</strong> vor einem Rohstoff macht ihn zum Zusatz (z. B. Färbeoxide); Zusätze zählen nicht zur Summe, aber zur Gesamtsumme.</p>` : ''}
       ${st.notizen.length ? `<h3 class="rf-titel">Weiterer Text → Notizen</h3>
         <ul class="rf-liste rf-notizen">${st.notizen.map(notizHtml).join('')}</ul>` : ''}
       <div class="sheet-buttons">
@@ -332,7 +337,7 @@ function pruefen(erg, zeilen, bild, aktuell) {
       const zus = st.rezept.filter(p => p.zusatz && p.anteil != null);
       const sB = runden(basis.reduce((s, p) => s + p.anteil, 0));
       const sZ = runden(zus.reduce((s, p) => s + p.anteil, 0));
-      el.textContent = basis.length ? `Summe: ${zahl(sB)}${sZ ? ` (dazu ${zahl(sZ)} Zusätze)` : ''}` : '';
+      el.textContent = basis.length ? `Summe: ${zahl(sB)}${sZ ? ` + Zusätze ${zahl(sZ)} = Gesamt ${zahl(runden(sB + sZ))}` : ''}` : '';
       // Summenfrage: verschwindet, sobald die Summe aufgeht
       const frage = dlg.querySelector('.rf-summe-frage');
       if (offen.has('summe') && erg.summe?.prozent && Math.abs(sB - 100) <= 0.6) offen.delete('summe');
@@ -384,15 +389,17 @@ function pruefen(erg, zeilen, bild, aktuell) {
         st[k] = aktuell[k];
         const inp = dlg.querySelector(`[data-feld="${k}"]`);
         if (inp) inp.value = aktuell[k];
-        else dlg.querySelector('[data-liter]').innerHTML = esc(wertText(aktuell[k], 'gl'));
+        else dlg.querySelector(`[data-zahl="${k}"]`).innerHTML = zahlAnzeige(k);
         return erledigt(k);
       }
-      if (b.hasAttribute('data-liter')) {
-        const res = await massAbfragen({ titel: 'Litergewicht', felder: [{ f: 'l', name: 'Litergewicht', wert: st.litergewicht, skala: 'gl', leeren: true }], waehlen: 'l' });
+      if (b.dataset.zahl) {
+        const k = b.dataset.zahl;
+        const [label, skala] = ZAHLEN[k];
+        const res = await massAbfragen({ titel: label, felder: [{ f: 'z', name: label, wert: st[k], skala, leeren: true }], waehlen: 'z' });
         if (!res) return;
-        st.litergewicht = res.werte.l;
-        b.innerHTML = st.litergewicht != null ? esc(wertText(st.litergewicht, 'gl')) : '<span class="wert-leer">–</span>';
-        return erledigt('litergewicht');
+        st[k] = res.werte.z;
+        b.innerHTML = zahlAnzeige(k);
+        return erledigt(k);
       }
       const zeile = b.closest('.rf-rezept [data-i]');
       if (zeile) {
@@ -457,6 +464,7 @@ function pruefen(erg, zeilen, bild, aktuell) {
           beschreibung: String(st.beschreibung ?? '').trim(),
           brennbereich: String(st.brennbereich ?? '').trim(),
           litergewicht: st.litergewicht,
+          wasser: st.wasser,
           rezept: st.rezept.filter(p => !p.weg && String(p.rohstoff).trim())
             .map(p => ({ rohstoff: `${p.zusatz ? '+ ' : ''}${String(p.rohstoff).trim().replace(/^\+\s*/, '')}`, anteil: p.anteil })),
           rezeptModus: st.rezeptModus || 'ersetzen',

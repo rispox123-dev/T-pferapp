@@ -1,6 +1,6 @@
 // Speichert die App-Dateien, damit sie auch ohne Internet startet.
 // Bei Änderungen an der App die Versionsnummer erhöhen.
-const CACHE = 'toepferbuch-v26';
+const CACHE = 'toepferbuch-v27';
 // Texterkennung für Rezeptfotos (gut 12 MB): erst bei der ersten Benutzung geladen und dann
 // dauerhaft behalten – sie ändert sich nicht mit jeder App-Version. Neue Version: Namen ändern.
 const VENDOR = 'toepferbuch-tesseract-6.0.1';

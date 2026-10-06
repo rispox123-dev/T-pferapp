@@ -1094,3 +1094,54 @@ dialog.masse::backdrop { background: rgba(40, 36, 30, .25); }
 .charge-tabelle tr.sum + tr.sum td { border-top: 0; }
 .charge-tabelle tr.wasser td { color: var(--text); }
 .charge-hinweis { margin: 10px 0 0; }
+
+/* ---------- Versionen einer Glasur ---------- */
+.topbar h1 { flex: 0 1 auto; min-width: 0; }
+.titel-zusatz { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; }
+.versions-knopf {
+  --strich: var(--strich-flieder);
+  display: inline-flex; align-items: center; gap: 3px;
+  min-height: 44px; padding: 2px 4px 6px;
+  border: 0; background: var(--strich) no-repeat center bottom 7px / calc(100% - 6px) 8px;
+  color: var(--text); font-size: 1.02rem; white-space: nowrap; cursor: pointer;
+}
+.versions-knopf svg { width: 22px; height: 22px; flex: 0 0 auto; }
+.versions-knopf small { color: var(--muted); font-size: .8rem; align-self: flex-start; margin-top: 6px; }
+.versions-knopf:active { transform: translateY(1px) rotate(-.4deg); }
+.versions-knopf:focus-visible { outline: 1.5px dashed var(--muted); outline-offset: 2px; }
+.btn svg.bleistift path { stroke-width: 1.6; }
+
+.versionen-zettel .fetzen-schatten { width: min(460px, 100%); }
+.versionen-liste { list-style: none; margin: 4px 0 8px; padding: 0; }
+.versionen-liste li { padding-left: calc(var(--tiefe, 0) * 22px); position: relative; }
+/* Bleistiftlinie zur Basis */
+.versionen-liste li[style*="--tiefe:1"]::before, .versionen-liste li[style*="--tiefe:2"]::before,
+.versionen-liste li[style*="--tiefe:3"]::before, .versionen-liste li[style*="--tiefe:4"]::before {
+  content: ""; position: absolute; top: -4px; left: calc(var(--tiefe) * 22px - 13px);
+  width: 10px; height: 34px; border-left: 1.4px solid var(--muted); border-bottom: 1.4px solid var(--muted);
+  border-bottom-left-radius: 6px; opacity: .55;
+}
+.version-zeile {
+  --strich: var(--strich-flieder);
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  min-height: 52px; padding: 6px 2px; border: 0; border-bottom: 1px solid var(--line);
+  background: none; text-align: left; cursor: pointer; color: var(--text);
+}
+.version-zeile .version-bild { flex: 0 0 40px; width: 40px; height: 40px; border-radius: 3px; overflow: hidden; }
+.version-zeile .version-bild .ph { font-size: 0; }
+.version-text { display: flex; flex-direction: column; min-width: 0; }
+.version-name { font-size: 1.12rem; }
+.version-zeile[aria-current="true"] .version-name { padding: 0 3px 3px; background: var(--strich) no-repeat center bottom / 100% 8px; align-self: flex-start; }
+.version-zeile:focus-visible { outline: 1.5px dashed var(--muted); outline-offset: 2px; }
+
+.version-kopf { margin: 2px 2px 14px; }
+.version-kopf p { margin: 0 0 4px; }
+.version-aenderung { color: var(--muted); }
+.version-hinweis { margin: 4px 2px 14px; }
+.vorher { color: var(--muted); font-size: .88rem; margin-left: 6px; }
+.recipe-table td .vorher { margin: 0 2px 0 0; text-decoration: line-through; }
+.recipe-table tr.geaendert td:last-child, .recipe-table tr.neu td { background: var(--strich-ocker) no-repeat left bottom 4px / 100% 7px; }
+.recipe-table tr.entfernt td { color: var(--muted); text-decoration: line-through; }
+.aenderung-marke { color: var(--accent); font-size: .82rem; text-decoration: none; display: inline-block; }
+.vergleich-wahl { margin-bottom: 8px; }
+.pp-leer { pointer-events: none; }

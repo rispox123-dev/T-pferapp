@@ -1883,6 +1883,34 @@ function rezeptSumme(rows) {
   return s;
 }
 
+// Neue Charge: Menge Trockenglasur (g) je Glasur merken (nur auf diesem Gerät, nur Bequemlichkeit)
+const CHARGE_KEY = id => `charge:${id}`;
+function chargeMenge(id) {
+  try { const v = Number(localStorage.getItem(CHARGE_KEY(id))); return v > 0 ? v : 1000; } catch { return 1000; }
+}
+function chargeMerken(id, menge) {
+  try { if (menge > 0) localStorage.setItem(CHARGE_KEY(id), String(menge)); } catch { /* ohne Speicher */ }
+}
+// Gramm zum Abwiegen: große Mengen auf 1 g, kleine (Färbeoxide) genauer
+const gramm = v => `${fmt(v, v >= 100 ? 0 : v >= 10 ? 1 : 2)} g`;
+
+// Tabelle der Charge: menge g Trockenglasur (Zusätze inbegriffen) auf die Anteile verteilt, dazu
+// das Wasser (Prozent vom Trockengewicht; 1 g Wasser = 1 ml)
+function chargeTabelle(g, menge) {
+  if (!(menge > 0)) return '<p class="hint">Tippe oben an, wie viel Trockenglasur du abmischen willst.</p>';
+  const zeilen = (g.rezept || []).map(r => ({ name: r.rohstoff, anteil: isNum(r.anteil) ? Number(r.anteil) : null }));
+  const gesamt = zeilen.reduce((s, z) => s + (z.anteil ?? 0), 0);
+  const f = menge / gesamt;
+  const ohne = zeilen.filter(z => z.anteil == null);
+  return `<table class="recipe-table charge-tabelle">
+      ${zeilen.filter(z => z.anteil != null).map(z => `<tr><td>${esc(z.name)}</td><td>${gramm(z.anteil * f)}</td></tr>`).join('')}
+      <tr class="sum"><td>Trockenglasur gesamt</td><td>${gramm(menge)}</td></tr>
+      ${isNum(g.wasser) ? `<tr class="sum wasser"><td>Wasser (${fmt(g.wasser, 0)} %)</td><td>${fmt(Math.round(menge * g.wasser / 100), 0)} ml</td></tr>` : ''}
+    </table>
+    ${!isNum(g.wasser) ? `<p class="hint charge-hinweis">Für die Wassermenge trage unter <a href="#/glasuren/${g.id}/bearbeiten">Bearbeiten</a> ein, wie viel Prozent Wasser die Glasur braucht.</p>` : ''}
+    ${ohne.length ? `<p class="hint charge-hinweis">Ohne Anteil, nicht berechnet: ${ohne.map(z => esc(z.name)).join(', ')}</p>` : ''}`;
+}
+
 // Rezept vom Foto: Kamera oder Galerie; das Foto des Rezepts wird mit der Glasur gespeichert,
 // wenn es übernommen wurde. lesen(file) → true, wenn das Rezept eingetragen wurde
 function mountRezeptFoto(container, state, session, lesen) {
@@ -1982,14 +2010,24 @@ async function viewGlaze(id) {
         ${g.beschreibung ? `<dt>Beschreibung</dt><dd>${esc(g.beschreibung)}</dd>` : ''}
         ${g.brennbereich ? `<dt>Brennbereich</dt><dd>${esc(g.brennbereich)}</dd>` : ''}
         <dt>Litergewicht</dt><dd>${withUnit(g.litergewicht, 'g/l', 0)}</dd>
+        <dt>Wassermenge</dt><dd>${isNum(g.wasser) ? `${fmt(g.wasser, 0)} % vom Trockengewicht` : '–'}</dd>
         ${g.angesetzt ? `<dt>Angesetzt am</dt><dd>${fmtDate(g.angesetzt)}</dd>` : ''}
       </dl>
     </div>
 
     ${g.rezept?.length || g.rezeptFoto ? `<div class="card"><h2>Rezept</h2>
       ${g.rezept?.length ? `<table class="recipe-table">${g.rezept.map(r => `<tr><td>${esc(r.rohstoff)}</td><td>${isNum(r.anteil) ? fmt(r.anteil, 2) : esc(r.anteil)}</td></tr>`).join('')}
-      <tr class="sum"><td>${summeZusatz ? 'Summe ohne Zusätze' : 'Summe'}</td><td>${fmt(summe, 2)}</td></tr></table>` : ''}
+      <tr class="sum"><td>${summeZusatz ? 'Summe ohne Zusätze' : 'Summe'}</td><td>${fmt(summe, 2)}</td></tr>
+      ${summeZusatz ? `<tr class="sum zusatz"><td>Zusätze</td><td>${fmt(summeZusatz, 2)}</td></tr>
+      <tr class="sum gesamt"><td>Gesamt mit Zusätzen</td><td>${fmt(summe + summeZusatz, 2)}</td></tr>` : ''}</table>` : ''}
       ${g.rezeptFoto ? `<div class="rezept-foto">${thumb(g.rezeptFoto, { zoom: true })}<span class="small muted">Foto des Rezepts</span></div>` : ''}</div>` : ''}
+
+    ${summe + summeZusatz > 0 ? `<div class="card charge" id="charge">
+      <h2>Neue Charge ansetzen</h2>
+      <p class="hint">Wie viel Trockenglasur willst du abmischen? Die App rechnet aus, wie viel du von jedem Rohstoff abwiegst${isNum(g.wasser) ? ' und wie viel Wasser dazukommt' : ''}. Die Zusätze sind in der Menge enthalten.</p>
+      ${wertFeld('Trockenglasur', 'charge', chargeMenge(id), 'g', { titel: 'Neue Charge', start: 1000 })}
+      <div id="charge-liste"></div>
+    </div>` : ''}
 
     ${g.notizen ? `<div class="card"><h2>Notizen</h2><p class="notes">${esc(g.notizen)}</p></div>` : ''}
 
@@ -2016,6 +2054,17 @@ async function viewGlaze(id) {
     <div class="btn-row"><button class="btn danger" id="del">Glasur löschen</button></div>`;
 
   hydratePhotos();
+  const charge = $app.querySelector('#charge');
+  if (charge) {
+    const zeigen = () => {
+      const v = charge.querySelector('[name="charge"]').value;
+      const menge = isNum(v) ? Number(v) : null;
+      chargeMerken(id, menge);
+      charge.querySelector('#charge-liste').innerHTML = chargeTabelle(g, menge);
+    };
+    charge.addEventListener('change', zeigen);
+    zeigen();
+  }
   $app.querySelector('#del').onclick = async () => {
     if (!confirm(`Glasur „${g.name}“ löschen? Protokolle behalten den Namen der Glasur.`)) return;
     for (const f of new Set(uses.map(u => u.f))) {
@@ -2054,7 +2103,11 @@ async function viewGlazeForm(id) {
         ${wertFeld('Litergewicht', 'litergewicht', g.litergewicht, 'gl')}
       </div>
       <p class="hint">Das Litergewicht (Gewicht von 1 Liter Glasurschlicker) beeinflusst stark, wie dick die Glasur beim Tauchen aufträgt.</p>
-      ${field('Angesetzt am', 'angesetzt', g.angesetzt, { type: 'date' })}
+      <div class="fields-2">
+        ${wertFeld('Wassermenge', 'wasser', g.wasser, 'prozent', { start: 80 })}
+        ${field('Angesetzt am', 'angesetzt', g.angesetzt, { type: 'date' })}
+      </div>
+      <p class="hint">Wassermenge in Prozent vom Trockengewicht: 80 % heißt 800 ml Wasser auf 1 kg Glasurpulver. Damit rechnet die App beim Ansetzen einer neuen Charge.</p>
     </div>
     <div class="card">
       <h2>Rezept</h2>
@@ -2077,7 +2130,9 @@ async function viewGlazeForm(id) {
     labelA: 'Rohstoff', labelB: 'Anteil', skalaB: 'anteil', addLabel: 'Rohstoff hinzufügen',
     onChange: () => {
       const { basis, zusatz } = rezeptSumme(rezept);
-      summeEl.textContent = basis || zusatz ? `Summe: ${fmt(basis, 2)}${zusatz ? ` (dazu ${fmt(zusatz, 2)} Zusätze)` : ''}` : '';
+      summeEl.innerHTML = !basis && !zusatz ? '' : zusatz
+        ? `Summe ohne Zusätze: ${fmt(basis, 2)}<br>Zusätze: ${fmt(zusatz, 2)}<br><strong>Gesamt mit Zusätzen: ${fmt(basis + zusatz, 2)}</strong>`
+        : `Summe: ${fmt(basis, 2)}`;
     },
   });
   mountSinglePhoto($app.querySelector('#photo'), state, 'photo', session, 'Testkachel');
@@ -2089,6 +2144,7 @@ async function viewGlazeForm(id) {
       beschreibung: strVal(form, 'beschreibung'),
       brennbereich: strVal(form, 'brennbereich'),
       litergewicht: numVal(form, 'litergewicht'),
+      wasser: numVal(form, 'wasser'),
       rezept: rezept.filter(r => String(r.a).trim()).map(r => ({ rohstoff: r.a, anteil: r.b })),
     };
     let res;
@@ -2100,6 +2156,7 @@ async function viewGlazeForm(id) {
     if (!res) return false;
     for (const k of ['name', 'beschreibung', 'brennbereich']) if (res[k]) form.elements[k].value = res[k];
     if (res.litergewicht != null) wertSetzen(form.elements.litergewicht, res.litergewicht);
+    if (res.wasser != null) wertSetzen(form.elements.wasser, res.wasser);
     if (res.rezept.length) {
       const neu = res.rezept.map(r => ({ a: r.rohstoff, b: r.anteil ?? '' }));
       const behalten = res.rezeptModus === 'anhaengen' ? rezept.filter(r => String(r.a).trim()) : [];
@@ -2126,6 +2183,7 @@ async function viewGlazeForm(id) {
       beschreibung: strVal(form, 'beschreibung'),
       brennbereich: strVal(form, 'brennbereich'),
       litergewicht: numVal(form, 'litergewicht'),
+      wasser: numVal(form, 'wasser'),
       angesetzt: strVal(form, 'angesetzt'),
       rezept: rezept.filter(r => String(r.a).trim()).map(r => {
         const v = String(r.b).trim().replace(',', '.');

@@ -1084,3 +1084,13 @@ dialog.masse::backdrop { background: rgba(40, 36, 30, .25); }
 .rf-blink { animation: rf-blink .9s ease-out; }
 @keyframes rf-blink { 0%, 60% { background: rgba(220, 189, 114, .45); } }
 @media (prefers-reduced-motion: reduce) { .rf-blink { animation: none; } }
+
+/* Rezept: Zusätze und Gesamtsumme, neue Charge */
+.recipe-table tr.sum.zusatz td { padding-top: 0; color: var(--muted); font-size: 1rem; }
+.recipe-table tr.sum.gesamt td { border-top: 1.5px solid var(--line); }
+.charge .wert-feld { max-width: 220px; }
+.charge-tabelle { margin-top: 6px; }
+.charge-tabelle tr.sum td { border-top: 1.5px solid var(--line); }
+.charge-tabelle tr.sum + tr.sum td { border-top: 0; }
+.charge-tabelle tr.wasser td { color: var(--text); }
+.charge-hinweis { margin: 10px 0 0; }

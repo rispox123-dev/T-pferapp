@@ -4,6 +4,7 @@ import { findPoints, abgleich, estimate, renderBlueprint, hashSeed, alteWerte, i
 import { analyze, loadForAnalysis, cropFromGuide, DEFAULT_SENS } from './erkennung.js';
 import { gefuehrteAufnahme, kameraVerfuegbar, GRUPPEN } from './kamera.js';
 import { masseAbfragen, massAbfragen, stelleName, wertText } from './massband.js';
+import { rezeptVomFoto } from './rezept-foto.js';
 
 // ---------------------------------------------------------------------------
 // Fachliche Listen
@@ -423,6 +424,7 @@ function mountRepeat(container, rows, { labelA, labelB, skalaB = '', addLabel, o
     if (rm) { rows.splice(rm.closest('.repeat-row').dataset.i, 1); render(); }
   });
   render();
+  return { render };
 }
 
 // ---------------------------------------------------------------------------
@@ -1871,6 +1873,57 @@ async function viewFiringForm(id, params) {
 // Glasuren (Rezepte + Auswertung)
 // ---------------------------------------------------------------------------
 
+// Summe der Anteile; Zusätze (Rohstoff beginnt mit „+“, z. B. Färbeoxide) zählen extra
+function rezeptSumme(rows) {
+  const s = { basis: 0, zusatz: 0 };
+  for (const r of rows) {
+    const v = String(r.b ?? '').replace(',', '.');
+    if (isNum(v)) s[/^\s*\+/.test(r.a) ? 'zusatz' : 'basis'] += Number(v);
+  }
+  return s;
+}
+
+// Rezept vom Foto: Kamera oder Galerie; das Foto des Rezepts wird mit der Glasur gespeichert,
+// wenn es übernommen wurde. lesen(file) → true, wenn das Rezept eingetragen wurde
+function mountRezeptFoto(container, state, session, lesen) {
+  const render = () => {
+    const id = state.rezeptFoto;
+    container.innerHTML = `<div class="rezept-foto-wahl">
+      ${id ? `<div class="pp-item">${thumb(id, { zoom: true })}<button type="button" class="pp-remove" data-remove aria-label="Foto des Rezepts entfernen">×</button></div>` : ''}
+      <button type="button" class="foto-knopf foto" data-pick="cam" aria-label="Rezept fotografieren">${ICON_KAMERA}<span>Foto</span></button>
+      <button type="button" class="foto-knopf galerie" data-pick="lib" aria-label="Rezept aus der Galerie">${ICON_RAHMEN}<span>Galerie</span></button>
+      <input type="file" accept="image/*" capture="environment" class="rf-cam" hidden>
+      <input type="file" accept="image/*" class="rf-lib" hidden>
+    </div>`;
+    hydratePhotos(container);
+  };
+  let laeuft = false;
+  container.addEventListener('click', e => {
+    if (e.target.closest('[data-remove]')) {
+      session.remove(state.rezeptFoto);
+      state.rezeptFoto = null;
+      return render();
+    }
+    const pick = e.target.closest('[data-pick]');
+    if (pick && !laeuft) container.querySelector(pick.dataset.pick === 'cam' ? '.rf-cam' : '.rf-lib').click();
+  });
+  container.addEventListener('change', async e => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || laeuft) return;
+    laeuft = true;
+    try {
+      if (!(await lesen(file))) return;
+      const id = await savePhotoFromFile(file);
+      if (state.rezeptFoto) session.remove(state.rezeptFoto);
+      state.rezeptFoto = id;
+      session.add(id);
+      render();
+    } catch (err) { toast(err.message); } finally { laeuft = false; }
+  });
+  render();
+}
+
 async function viewGlazes() {
   setHeader({ title: 'Glasuren' });
   const glazes = (await db.getAll('glazes')).sort((a, b) => a.name.localeCompare(b.name, 'de'));
@@ -1911,7 +1964,7 @@ async function viewGlaze(id) {
   const uses = (await db.getAll('firings'))
     .flatMap(f => (f.lagen || []).map((l, i) => ({ f, l, i })).filter(x => x.l.glazeId === id))
     .sort((a, b) => (a.l.dauer ?? 1e9) - (b.l.dauer ?? 1e9) || (a.l.wdh ?? 0) - (b.l.wdh ?? 0));
-  const summe = (g.rezept || []).reduce((s, r) => s + (isNum(r.anteil) ? Number(r.anteil) : 0), 0);
+  const { basis: summe, zusatz: summeZusatz } = rezeptSumme((g.rezept || []).map(r => ({ a: r.rohstoff, b: r.anteil })));
 
   // Kleine Statistik: Ergebnis je Tauchdauer
   const groups = new Map();
@@ -1933,9 +1986,10 @@ async function viewGlaze(id) {
       </dl>
     </div>
 
-    ${g.rezept?.length ? `<div class="card"><h2>Rezept</h2>
-      <table class="recipe-table">${g.rezept.map(r => `<tr><td>${esc(r.rohstoff)}</td><td>${isNum(r.anteil) ? fmt(r.anteil, 2) : esc(r.anteil)}</td></tr>`).join('')}
-      <tr class="sum"><td>Summe</td><td>${fmt(summe, 2)}</td></tr></table></div>` : ''}
+    ${g.rezept?.length || g.rezeptFoto ? `<div class="card"><h2>Rezept</h2>
+      ${g.rezept?.length ? `<table class="recipe-table">${g.rezept.map(r => `<tr><td>${esc(r.rohstoff)}</td><td>${isNum(r.anteil) ? fmt(r.anteil, 2) : esc(r.anteil)}</td></tr>`).join('')}
+      <tr class="sum"><td>${summeZusatz ? 'Summe ohne Zusätze' : 'Summe'}</td><td>${fmt(summe, 2)}</td></tr></table>` : ''}
+      ${g.rezeptFoto ? `<div class="rezept-foto">${thumb(g.rezeptFoto, { zoom: true })}<span class="small muted">Foto des Rezepts</span></div>` : ''}</div>` : ''}
 
     ${g.notizen ? `<div class="card"><h2>Notizen</h2><p class="notes">${esc(g.notizen)}</p></div>` : ''}
 
@@ -1969,6 +2023,7 @@ async function viewGlaze(id) {
       await db.put('firings', f);
     }
     await deletePhoto(g.photo);
+    await deletePhoto(g.rezeptFoto);
     await db.del('glazes', id);
     toast('Gelöscht');
     go('#/glasuren', true);
@@ -1978,7 +2033,7 @@ async function viewGlaze(id) {
 async function viewGlazeForm(id) {
   const g = id ? await db.get('glazes', id) : { angesetzt: today(), rezept: [] };
   if (!g) return notFound();
-  const state = { photo: g.photo || null };
+  const state = { photo: g.photo || null, rezeptFoto: g.rezeptFoto || null };
   const rezept = (g.rezept || []).map(r => ({ a: r.rohstoff, b: r.anteil ?? '' }));
   if (!rezept.length) rezept.push({ a: '', b: '' });
   const session = photoSession();
@@ -1986,6 +2041,11 @@ async function viewGlazeForm(id) {
   setHeader({ title: id ? 'Glasur bearbeiten' : 'Neue Glasur', back: id ? `#/glasuren/${id}` : '#/glasuren' });
 
   $app.innerHTML = `<form id="f" novalidate>
+    <div class="card">
+      <h2>Rezept vom Foto</h2>
+      <p class="hint">Fotografiere ein Rezept (Buch, Zettel, Bildschirm) – die App liest Name, Rohstoffe, Anteile, Brennbereich und Litergewicht und trägt sie unten ein. Wo sie unsicher ist, fragt sie nach.</p>
+      <div id="rezept-foto"></div>
+    </div>
     <div class="card">
       ${field('Name', 'name', g.name, { placeholder: 'z. B. Seladon hell' })}
       ${field('Beschreibung', 'beschreibung', g.beschreibung, { placeholder: 'z. B. glänzend, transparent-grün' })}
@@ -2013,16 +2073,46 @@ async function viewGlazeForm(id) {
   </form>`;
 
   const summeEl = $app.querySelector('#summe');
-  mountRepeat($app.querySelector('#rezept'), rezept, {
+  const rezeptListe = mountRepeat($app.querySelector('#rezept'), rezept, {
     labelA: 'Rohstoff', labelB: 'Anteil', skalaB: 'anteil', addLabel: 'Rohstoff hinzufügen',
     onChange: () => {
-      const s = rezept.reduce((a, r) => a + (isNum(String(r.b).replace(',', '.')) ? Number(String(r.b).replace(',', '.')) : 0), 0);
-      summeEl.textContent = s ? `Summe: ${fmt(s, 2)}` : '';
+      const { basis, zusatz } = rezeptSumme(rezept);
+      summeEl.textContent = basis || zusatz ? `Summe: ${fmt(basis, 2)}${zusatz ? ` (dazu ${fmt(zusatz, 2)} Zusätze)` : ''}` : '';
     },
   });
   mountSinglePhoto($app.querySelector('#photo'), state, 'photo', session, 'Testkachel');
 
   const form = $app.querySelector('#f');
+  mountRezeptFoto($app.querySelector('#rezept-foto'), state, session, async file => {
+    const aktuell = {
+      name: strVal(form, 'name'),
+      beschreibung: strVal(form, 'beschreibung'),
+      brennbereich: strVal(form, 'brennbereich'),
+      litergewicht: numVal(form, 'litergewicht'),
+      rezept: rezept.filter(r => String(r.a).trim()).map(r => ({ rohstoff: r.a, anteil: r.b })),
+    };
+    let res;
+    try { res = await rezeptVomFoto(file, aktuell); } catch (err) {
+      console.error(err);
+      toast('Das Rezept konnte nicht gelesen werden.');
+      return false;
+    }
+    if (!res) return false;
+    for (const k of ['name', 'beschreibung', 'brennbereich']) if (res[k]) form.elements[k].value = res[k];
+    if (res.litergewicht != null) wertSetzen(form.elements.litergewicht, res.litergewicht);
+    if (res.rezept.length) {
+      const neu = res.rezept.map(r => ({ a: r.rohstoff, b: r.anteil ?? '' }));
+      const behalten = res.rezeptModus === 'anhaengen' ? rezept.filter(r => String(r.a).trim()) : [];
+      rezept.splice(0, rezept.length, ...behalten, ...neu);
+      rezeptListe.render();
+    }
+    if (res.notizen) {
+      const alt = strVal(form, 'notizen');
+      if (!alt.includes(res.notizen)) form.elements.notizen.value = alt ? `${alt}\n${res.notizen}` : res.notizen;
+    }
+    toast('Rezept eingetragen – bitte speichern');
+    return true;
+  });
   $app.querySelector('#cancel').onclick = () => $back.click();
   form.onsubmit = async e => {
     e.preventDefault();
@@ -2043,6 +2133,7 @@ async function viewGlazeForm(id) {
       }),
       notizen: strVal(form, 'notizen'),
       photo: state.photo,
+      rezeptFoto: state.rezeptFoto,
       createdAt: g.createdAt || now,
       updatedAt: now,
     };

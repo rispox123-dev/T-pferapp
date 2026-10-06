@@ -135,10 +135,11 @@ const escHtml = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '
 // gezeichneter Radiergummi: eingetragenen Wert wieder löschen
 const RADIERER = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.3 15.4L12.9 6.3C13.6 5.6 14.5 5.6 15.2 6.2L19.1 9.9C19.8 10.6 19.8 11.5 19.1 12.2L11.5 20.2 7.5 20.3 4.4 17.2C3.9 16.7 3.9 15.9 4.3 15.4Z"/><path d="M8.9 10.8L14.5 16.2M11.6 20.2C14.6 20.1 17.6 20.3 20.4 20" class="duenn"/></svg>`;
 
-// Zettel mit Risskante und Maßband darunter; inhalt: HTML auf dem Zettel
-function zettelDialog(titel, inhalt) {
+// Zettel mit Risskante und Maßband darunter; inhalt: HTML auf dem Zettel. Auch für andere
+// Zettel der App (z. B. das Rezept vom Foto), dann ohne Maßband und mit eigener Klasse.
+export function zettelDialog(titel, inhalt, { massband = true, klasse = '' } = {}) {
   const dlg = document.createElement('dialog');
-  dlg.className = 'masse';
+  dlg.className = `masse ${klasse}`.trim();
   dlg.setAttribute('aria-label', titel);
   dlg.innerHTML = `
     <div class="masse-buehne">
@@ -147,9 +148,9 @@ function zettelDialog(titel, inhalt) {
         <div class="fetzen">${inhalt}</div>
       </div>
     </div>
-    <div class="massband" aria-hidden="true">
+    ${massband ? `<div class="massband" aria-hidden="true">
       <canvas role="slider" tabindex="-1" aria-label="Maßband"></canvas>
-    </div>`;
+    </div>` : ''}`;
   document.body.append(dlg);
   const rand = zufall(Date.now());
   const fetzen = dlg.querySelector('.fetzen');
@@ -164,7 +165,7 @@ function zettelDialog(titel, inhalt) {
 }
 
 // Kein Eingabefeld: nicht gleich ein Maß fokussieren (sonst springt die Tastatur auf)
-function zettelZeigen(dlg) {
+export function zettelZeigen(dlg) {
   dlg.showModal();
   const h2 = dlg.querySelector('.fetzen h2');
   h2.tabIndex = -1;

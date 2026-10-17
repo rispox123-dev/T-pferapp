@@ -4,7 +4,7 @@ Eine Handy-App für Töpferinnen und Töpfer, die eigene Stücke töpfern und ei
 
 ## Was die App kann
 
-Unten wechselst du zwischen **Töpfern**, **Glasieren**, **Glasuren** und **Mehr**. Dabei blättert die Seite um wie in einem Skizzenbuch: vorwärts nach links, zurück nach rechts (bei „Bewegung reduzieren“ im System ohne Animation). Umblättern geht auch per Wischen am Seitenrand: vom rechten Rand nach links zur nächsten, vom linken Rand nach rechts zur vorigen Seite. Das Blatt folgt dabei dem Finger; wer nicht weit genug wischt, legt es wieder zurück.
+Die App sieht aus wie ein gebundenes Skizzenbuch: links die Falz mit Heftfaden, in die sich das Blatt hineinwölbt, rechts die Blattkanten und ein Stück Buchdeckel. Unten stehen **Töpfern**, **Glasieren**, **Glasuren** und **Mehr** einfach als Wörter auf der Seite. Wer dazwischen wechselt, blättert um: vorwärts hebt sich das Blatt und biegt sich beim Umschlagen nach links um die Bindung, zurück klappt die vorige Seite wieder herüber (bei „Bewegung reduzieren“ im System ohne Animation). Umblättern geht auch per Wischen am Seitenrand: vom rechten Rand nach links zur nächsten, vom linken Rand nach rechts zur vorigen Seite. Das Blatt folgt dabei dem Finger; wer nicht weit genug wischt, legt es wieder zurück.
 
 ### 1. Töpfern – Werkstücke als Bibliothek zum Wiederholen
 - Fotos des Stücks: gezeichnete **Kamera** („Foto“, die geführte Aufnahme für die Blaupause; ohne Kamerazugriff im Browser die Kamera des Handys) oder **Bilderrahmen** („Galerie“)
@@ -14,7 +14,7 @@ Unten wechselst du zwischen **Töpfern**, **Glasieren**, **Glasuren** und **Mehr
 - Beliebige weitere Angaben (z. B. Henkellänge, Fußring)
 - Notizen und Arbeitsschritte
 - **„Nochmal töpfern“**: übernimmt Ton, Maße und Blaupause als Vorlage für ein neues Stück
-- **Fotos oder Skizzenbuch**: Oben rechts in der Übersicht wechselt ein kleiner, mit Bleistift gezeichneter Knopf zwischen den Fotos und den Blaupausen. Als Skizzen stehen die Stücke ohne Maße, nur mit ihrem Namen, direkt auf dem Blatt – wie eine Seite im Skizzenbuch. Der Knopf zeigt, wohin es geht: ein Skizzenbuch mit Stift (zu den Skizzen) oder ein Polaroid (zurück zu den Fotos). Die gewählte Ansicht bleibt erhalten
+- **Fotos oder Skizzenbuch**: Oben rechts in der Übersicht wechselt ein kleiner, mit Bleistift gezeichneter Knopf zwischen den Fotos und den Blaupausen. Als Skizzen stehen die Stücke klein, zu dritt nebeneinander, ohne Maße und nur mit ihrem Namen direkt auf dem Blatt – wie eine Seite im Skizzenbuch. Der Knopf zeigt, wohin es geht: ein Skizzenbuch mit Stift (zu den Skizzen) oder ein Polaroid (zurück zu den Fotos). Die gewählte Ansicht bleibt erhalten
 
 ### Blaupause aus dem Foto
 - **Geführte Aufnahme** (Knopf „Foto“): Eine Maske zeigt den Umriss einer typischen Form (Becher/Tasse, Schüssel, Vase), die Mittellinie, die Standlinie und die Augenhöhe. Eine **Wasserwaage** (Lagesensor) wird grün, wenn das Handy senkrecht und gerade ist. Hinweise wie „Näher heran“, „Standfläche auf die Standlinie“ oder „Mehr Licht“ führen zum besten Winkel: **frontal, Kamera auf halber Höhe, Henkel zur Seite**.

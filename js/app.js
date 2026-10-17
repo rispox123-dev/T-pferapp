@@ -2703,13 +2703,13 @@ let routeToken = 0;
 
 // ---------------------------------------------------------------------------
 // Umblättern: Wer unten in der Tableiste wechselt oder am Seitenrand wischt, blättert wie
-// in einem Skizzenbuch um. Die alte Seite wird als Blatt über die neue gelegt und dreht sich
-// um die Bindung weg – vorwärts (Töpfern → Glasieren → Glasuren → Mehr) nach links, zurück
-// nach rechts.
+// in einem Skizzenbuch mit Bindung links um. Vorwärts (Töpfern → Glasieren → Glasuren → Mehr)
+// hebt sich die alte Seite und schlägt nach links um; zurück klappt die vorige Seite von der
+// Bindung her wieder über die aktuelle.
 // ---------------------------------------------------------------------------
 
 const TAB_FOLGE = ['werkstuecke', 'glasieren', 'glasuren', 'mehr'];
-let blatt = null; // die alte Seite, die gleich umgeblättert wird
+let blatt = null; // das Blatt, das gleich umgeschlagen wird
 let blattNotfall = 0;
 const reduziert = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -2720,24 +2720,33 @@ const naechsteSeite = () => Promise.race([
   new Promise(r => setTimeout(r, 1500)),
 ]);
 
-// Abbild der aktuellen Seite als Blatt über allem
-function blattBauen(richtung) {
-  const el = document.createElement('div');
-  el.className = `blatt ${richtung}`;
-  el.setAttribute('aria-hidden', 'true');
-  el.inert = true;
-  // Kopfzeile fest oben, der Inhalt so weit verschoben wie gerade gescrollt
+// Abbild der aktuellen Seite: Kopfzeile, Inhalt so weit verschoben wie gerade gescrollt,
+// der schwebende Knopf („+ Neu“) und die Tableiste – alles, was auf dem Blatt steht
+let abbildNr = 0;
+function seitenAbbild(klasse) {
   const kopf = document.querySelector('.topbar').cloneNode(true);
+  const leiste = document.querySelector('.tabbar').cloneNode(true);
   const inhalt = document.createElement('div');
   inhalt.className = 'blatt-inhalt';
   inhalt.style.transform = `translateY(${-window.scrollY}px)`;
-  inhalt.append(Object.assign(document.createElement('div'), { className: 'blatt-abstand' }), $app.cloneNode(true));
+  const app = $app.cloneNode(true);
+  // Kacheln außer Sicht nur als leere Fläche mitnehmen: das Abbild wird für jeden Streifen kopiert
+  const kacheln = [...$app.querySelectorAll('.tile, .row-card')];
+  const kopien = app.querySelectorAll('.tile, .row-card');
+  kacheln.forEach((k, i) => {
+    const r = k.getBoundingClientRect();
+    if (r.bottom >= 0 && r.top <= window.innerHeight) return;
+    kopien[i].replaceChildren();
+    kopien[i].style.height = `${r.height}px`;
+  });
+  inhalt.append(Object.assign(document.createElement('div'), { className: 'blatt-abstand' }), app);
   // IDs im Abbild nicht doppelt vergeben. Die Zeichnungen (SVG) hängen aber an ihren IDs: Ihr
   // <style> gilt nur für #bp…, und mit url(#…) verweisen sie auf Bleistiftfilter, Masken und
   // Verläufe. Diese IDs umbenennen statt löschen, sonst wird die Skizze beim Umblättern schwarz.
+  const vorsilbe = `blatt${++abbildNr}-`;
   const umbenannt = new Map();
-  for (const n of [kopf, ...kopf.querySelectorAll('[id]'), ...inhalt.querySelectorAll('[id]')]) {
-    if (n instanceof SVGElement) { umbenannt.set(n.id, `blatt-${n.id}`); n.id = `blatt-${n.id}`; } else n.removeAttribute('id');
+  for (const n of [kopf, ...kopf.querySelectorAll('[id]'), ...inhalt.querySelectorAll('[id]'), ...leiste.querySelectorAll('[id]')]) {
+    if (n instanceof SVGElement) { umbenannt.set(n.id, vorsilbe + n.id); n.id = vorsilbe + n.id; } else n.removeAttribute('id');
   }
   if (umbenannt.size) {
     const neu = (ganz, id) => (umbenannt.has(id) ? ganz.replace(id, umbenannt.get(id)) : ganz);
@@ -2750,18 +2759,102 @@ function blattBauen(richtung) {
     for (const st of inhalt.querySelectorAll('svg style')) st.textContent = st.textContent.replace(/#([\w-]+)/g, neu);
   }
   inhalt.querySelector('.blatt-abstand').style.height = `${document.querySelector('.topbar').offsetHeight}px`;
-  const seite = document.createElement('div');
-  seite.className = 'blatt-seite';
-  // der schwebende Knopf („+ Neu“) bleibt unten auf dem Blatt
-  seite.append(inhalt, kopf, ...inhalt.querySelectorAll('.fab'));
-  el.append(seite);
+  const bild = document.createElement('div');
+  bild.className = klasse;
+  bild.append(inhalt, kopf, ...inhalt.querySelectorAll('.fab'), leiste);
+  return bild;
+}
+
+// Das Blatt besteht aus schmalen Streifen; jeder hängt am vorigen und zeigt seinen Ausschnitt
+// des Abbilds. Ein Blatt ist ein Objekt { el, richtung, p, streifen, lichter, schatten }:
+// p = 0 liegt flach rechts auf, p = 1 ist ganz um die Bindung nach links umgeschlagen.
+const STREIFEN = 10;
+function blattAuflegen(b) {
+  if (b.streifen.length || b.abgesagt) return;
+  const bild = seitenAbbild('blatt-bild');
+  const w = window.innerWidth / STREIFEN;
+  let eltern = b.el;
+  for (let i = 0; i < STREIFEN; i++) {
+    const s = document.createElement('div');
+    s.className = 'blatt-streifen';
+    const aus = document.createElement('div');
+    aus.className = 'blatt-ausschnitt';
+    const teil = i === STREIFEN - 1 ? bild : bild.cloneNode(true);
+    teil.style.left = `${-i * w}px`;
+    const licht = Object.assign(document.createElement('div'), { className: 'blatt-licht' });
+    aus.append(teil, licht);
+    s.append(aus);
+    eltern.append(s);
+    eltern = s;
+    b.streifen.push(s);
+    b.lichter.push(licht);
+  }
+  blattZeigen(b, b.p);
+}
+
+// vorwärts schlägt die alte Seite um; zurück liegt die alte Seite unten und die vorige Seite
+// klappt von der Bindung her darüber (sie wird aufgelegt, sobald sie gezeichnet ist)
+function blattNeu(richtung) {
+  const el = document.createElement('div');
+  el.className = `blatt ${richtung}`;
+  el.setAttribute('aria-hidden', 'true');
+  el.inert = true;
+  el.style.setProperty('--w', `${window.innerWidth / STREIFEN}px`);
+  el.style.setProperty('--breite', `${window.innerWidth}px`);
+  const schatten = Object.assign(document.createElement('div'), { className: 'blatt-schatten' });
+  if (richtung === 'zurueck') el.append(seitenAbbild('blatt-unterlage'));
+  el.append(schatten);
+  const b = { el, richtung, p: richtung === 'vor' ? 0 : 1, streifen: [], lichter: [], schatten, abgesagt: false };
+  if (richtung === 'vor') blattAuflegen(b);
   document.body.append(el);
-  return el;
+  return b;
+}
+
+// Winkel der Streifen: am Bund dreht sich das Blatt um p·91°, die freie Kante eilt voraus und
+// biegt sich am stärksten, wenn das Blatt halb umgeschlagen ist
+const BIEGUNG = 44;
+const biegeAnteil = Array.from({ length: STREIFEN }, (_, i) => i / (STREIFEN * (STREIFEN - 1) / 2));
+function blattZeigen(b, p) {
+  b.p = p;
+  const winkel = p * 91;
+  b.el.style.setProperty('--winkel', `${-winkel}deg`);
+  if (!b.streifen.length) return;
+  const biegen = Math.sin(p * Math.PI) * BIEGUNG;
+  // was sich zum Betrachter neigt, fällt aus dem Licht – über jeden Streifen verlaufend, damit
+  // keine Stufen zwischen den Streifen sichtbar werden
+  const dunkel = grad => `rgba(40, 36, 30, ${((1 - Math.cos(grad * Math.PI / 180)) * 0.36).toFixed(3)})`;
+  let summe = 0;
+  b.streifen.forEach((s, i) => {
+    const d = i ? biegen * biegeAnteil[i] : winkel - 0.45 * biegen;
+    const naechster = i < STREIFEN - 1 ? biegen * biegeAnteil[i + 1] : 0;
+    summe += d;
+    s.style.transform = `rotateY(${-d}deg)`;
+    b.lichter[i].style.background = `linear-gradient(to right, ${dunkel(summe - (i ? d / 2 : 0))}, ${dunkel(summe + naechster / 2)})`;
+  });
+  b.schatten.style.opacity = Math.min(1, p * 3, (1 - p) * 2).toFixed(3);
+}
+
+const sanft = t => (t < 0.5 ? 2 * t * t : 1 - (2 - 2 * t) ** 2 / 2);
+const auslaufen = t => 1 - (1 - t) ** 2;
+function blattGleiten(b, ziel, dauer, kurve = auslaufen) {
+  const von = b.p;
+  let t0 = null;
+  return new Promise(fertig => {
+    const schritt = jetzt => {
+      if (!b.el.isConnected) return fertig();
+      t0 ??= jetzt;
+      const t = Math.min(1, (jetzt - t0) / dauer);
+      blattZeigen(b, von + (ziel - von) * kurve(t));
+      if (t < 1) requestAnimationFrame(schritt); else fertig();
+    };
+    requestAnimationFrame(schritt);
+    setTimeout(fertig, dauer + 600); // falls keine Bilder gezeichnet werden (Seite im Hintergrund)
+  });
 }
 
 function blattAbnehmen(richtung) {
-  blatt?.remove();
-  blatt = blattBauen(richtung);
+  blatt?.el.remove();
+  blatt = blattNeu(richtung);
   // falls die neue Seite auf sich warten lässt, trotzdem umblättern
   clearTimeout(blattNotfall);
   blattNotfall = setTimeout(blattLos, 1500);
@@ -2770,12 +2863,11 @@ function blattAbnehmen(richtung) {
 // neue Seite steht darunter bereit: das Blatt umschlagen
 function blattLos() {
   clearTimeout(blattNotfall);
-  const el = blatt;
-  if (!el || el.classList.contains('los')) return;
+  const b = blatt;
+  if (!b) return;
   blatt = null;
-  el.addEventListener('animationend', e => { if (e.target.classList.contains('blatt-seite')) el.remove(); });
-  setTimeout(() => el.remove(), 1200); // falls keine Animation läuft
-  requestAnimationFrame(() => el.classList.add('los'));
+  blattAuflegen(b);
+  blattGleiten(b, b.richtung === 'vor' ? 1 : 0, 650, sanft).then(() => b.el.remove());
 }
 
 document.querySelector('.tabbar').addEventListener('click', e => {
@@ -2787,8 +2879,8 @@ document.querySelector('.tabbar').addEventListener('click', e => {
 });
 
 // Wischen am Seitenrand: vom rechten Rand nach links blättert vor, vom linken Rand nach rechts
-// zurück. Das Blatt folgt dabei dem Finger; die neue Seite liegt schon darunter. Wer nicht weit
-// genug wischt, legt das Blatt wieder zurück.
+// zurück. Das Blatt folgt dabei dem Finger; die neue Seite liegt schon darunter (zurück: sie
+// klappt über die alte). Wer nicht weit genug wischt, legt das Blatt wieder zurück.
 const RAND = 36; // px vom Bildschirmrand, in denen das Wischen beginnen muss
 let zug = null;
 
@@ -2802,18 +2894,8 @@ function wischZiel(x) {
   return null;
 }
 
-// Winkel so, dass die Blattkante unter dem Finger liegt
-function zugWinkel(z, x) {
-  const w = window.innerWidth;
-  const offen = z.richtung === 'vor' ? 1 - x / w : x / w; // 0 = flach, 1 = ganz umgeschlagen
-  return Math.acos(Math.max(-1, Math.min(1, 1 - Math.max(0, offen)))) * 180 / Math.PI;
-}
-
-function zugZeigen(z, winkel) {
-  const p = Math.min(1, winkel / 91);
-  z.el.style.setProperty('--winkel', `${z.richtung === 'vor' ? -winkel : winkel}deg`);
-  z.el.style.setProperty('--p', p.toFixed(3));
-}
+// Stellung so, dass die Blattkante unter dem Finger liegt (0 = flach, 1 = ganz umgeschlagen)
+const zugStellung = x => Math.acos(Math.max(-1, Math.min(1, x / window.innerWidth))) / (Math.PI / 2);
 
 document.addEventListener('touchstart', e => {
   if (zug || e.touches.length !== 1) return;
@@ -2821,7 +2903,7 @@ document.addEventListener('touchstart', e => {
   if (document.body.classList.contains('vollbild-offen') || !document.getElementById('viewer').hidden) return;
   if (document.querySelector('dialog[open]') || e.target.closest('input, textarea, select, canvas, dialog, .massband')) return;
   const ziel = wischZiel(t.clientX);
-  if (ziel) zug = { ...ziel, x0: t.clientX, y0: t.clientY, x: t.clientX, t: e.timeStamp, v: 0, el: null };
+  if (ziel) zug = { ...ziel, x0: t.clientX, y0: t.clientY, x: t.clientX, t: e.timeStamp, v: 0, blatt: null };
 }, { passive: true });
 
 document.addEventListener('touchmove', e => {
@@ -2835,12 +2917,13 @@ document.addEventListener('touchmove', e => {
     zug.los = true;
     // ohne Animation („Bewegung reduzieren“) wird erst beim Loslassen umgeblättert
     if (!reduziert()) {
-      blatt?.remove();
+      blatt?.el.remove();
       blatt = null;
-      zug.el = blattBauen(zug.richtung);
-      zug.el.classList.add('ziehen');
-      zugZeigen(zug, 0);
+      const b = zug.blatt = blattNeu(zug.richtung);
+      b.el.classList.add('ziehen');
       zug.fertig = naechsteSeite();
+      // zurück: die vorige Seite klappt herüber, sobald sie unter der alten fertig gezeichnet ist
+      if (b.richtung === 'zurueck') zug.fertig.then(() => blattAuflegen(b));
       go(`#/${zug.tab}`); // die neue Seite entsteht schon unter dem Blatt
     }
   }
@@ -2851,35 +2934,31 @@ document.addEventListener('touchmove', e => {
   zug.v = zug.v * 0.6 + v * 0.4;
   zug.x = t.clientX;
   zug.t = e.timeStamp;
-  if (zug.el) zugZeigen(zug, zugWinkel(zug, t.clientX));
+  if (zug.blatt) blattZeigen(zug.blatt, zugStellung(t.clientX));
 }, { passive: false });
 
 function zugEnde(abgebrochen) {
   const z = zug;
   zug = null;
   if (!z?.los) return;
-  const winkel = z.el ? zugWinkel(z, z.x) : 0;
-  const weiter = !abgebrochen && z.v > -0.2 && (winkel > 35 || z.v > 0.45 || (!z.el && Math.abs(z.x - z.x0) > 50));
-  if (!z.el) {
+  const b = z.blatt;
+  const vor = z.richtung === 'vor';
+  const geschafft = b ? (vor ? b.p : 1 - b.p) : 0;
+  const weiter = !abgebrochen && z.v > -0.2 && (geschafft > 0.38 || z.v > 0.45 || (!b && Math.abs(z.x - z.x0) > 50));
+  if (!b) {
     if (weiter) go(`#/${z.tab}`);
     return;
   }
-  if (!weiter) history.back(); // zurück auf die alte Seite (sie liegt gleich wieder unter dem Blatt)
-  const el = z.el;
-  const rest = weiter ? (91 - winkel) / 91 : winkel / 91;
-  el.style.setProperty('--dauer', `${Math.max(0.16, 0.55 * rest).toFixed(2)}s`);
-  // das Blatt bis zum Zielwinkel gleiten lassen
-  const legen = ziel => new Promise(r => {
-    el.querySelector('.blatt-seite').addEventListener('transitionend', e => { if (e.propertyName === 'transform') r(); });
-    setTimeout(r, 900);
-    requestAnimationFrame(() => { el.classList.add('gleiten'); zugZeigen(z, ziel); });
-  });
+  const ziel = weiter === vor ? 1 : 0;
+  const dauer = Math.max(160, 550 * Math.abs(ziel - b.p));
   if (weiter) {
     // erst umschlagen, wenn die neue Seite darunter steht
-    z.fertig.then(() => legen(91)).then(() => el.remove());
-  } else {
-    Promise.all([legen(0), naechsteSeite()]).then(() => el.remove());
+    z.fertig.then(() => { blattAuflegen(b); return blattGleiten(b, ziel, dauer); }).then(() => b.el.remove());
+    return;
   }
+  history.back(); // zurück auf die alte Seite (sie liegt gleich wieder unter dem Blatt)
+  if (!b.streifen.length) b.abgesagt = true; // zurück: die vorige Seite gar nicht erst auflegen
+  Promise.all([blattGleiten(b, ziel, dauer), naechsteSeite()]).then(() => b.el.remove());
 }
 document.addEventListener('touchend', () => zugEnde(false));
 document.addEventListener('touchcancel', () => zugEnde(true));
